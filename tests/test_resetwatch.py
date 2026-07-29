@@ -163,15 +163,53 @@ class TestAlertStore(unittest.TestCase):
         s = resetwatch.AlertStore(self.path).load()
         s.merge_seen({"claude": {"resets_at": 1.0, "remaining_pct": 2.0}})
         s.add([{"id": "abc", "provider": "claude"}])
-        s.save()
+        self.assertTrue(s.save())
         again = resetwatch.AlertStore(self.path).load()
         self.assertEqual(again.seen["claude"]["remaining_pct"], 2.0)
         self.assertEqual(len(again.pending), 1)
 
     def test_save_leaves_no_temp_files(self):
         s = resetwatch.AlertStore(self.path).load()
-        s.save()
+        self.assertTrue(s.save())
         self.assertEqual(os.listdir(self.dir.name), ["state.json"])
+
+    def test_save_reports_success(self):
+        s = resetwatch.AlertStore(self.path).load()
+        self.assertIs(s.save(), True)
+        self.assertTrue(s.last_save_ok)
+
+    def test_save_failure_returns_false_instead_of_raising(self):
+        """Путь в несуществующий каталог: mkstemp падает, save() -- нет."""
+        bad = os.path.join(self.dir.name, "no-such-dir", "state.json")
+        log = os.path.join(self.dir.name, "widget-error.log")
+        s = resetwatch.AlertStore(bad, log_path=log)
+        self.assertIs(s.save(), False)
+        self.assertFalse(s.last_save_ok)
+
+    def test_save_failure_is_logged(self):
+        bad = os.path.join(self.dir.name, "no-such-dir", "state.json")
+        log = os.path.join(self.dir.name, "widget-error.log")
+        resetwatch.AlertStore(bad, log_path=log).save()
+        with open(log, "r", encoding="utf-8") as f:
+            line = f.read()
+        self.assertIn("save failed", line)
+
+    def test_logging_failure_cannot_raise(self):
+        """Лог тоже может быть недоступен -- это не повод бросать наружу."""
+        bad = os.path.join(self.dir.name, "no-such-dir", "state.json")
+        bad_log = os.path.join(self.dir.name, "no-such-dir", "widget-error.log")
+        s = resetwatch.AlertStore(bad, log_path=bad_log)
+        self.assertIs(s.save(), False)
+
+    def test_save_recovers_after_a_failure(self):
+        s = resetwatch.AlertStore(self.path).load()
+        s.last_save_ok = False
+        self.assertIs(s.save(), True)
+        self.assertTrue(s.last_save_ok)
+
+    def test_log_path_defaults_next_to_the_state_file(self):
+        s = resetwatch.AlertStore(self.path)
+        self.assertEqual(os.path.dirname(s.log_path), self.dir.name)
 
     def test_merge_seen_preserves_absent_providers(self):
         s = resetwatch.AlertStore(self.path).load()

@@ -335,6 +335,7 @@ const L10N = {
     connectors: "Коннекторы",
     connConnected: "подключено",
     connMissing: "не настроено",
+    stateWriteFailed: "Не удалось записать состояние оповещений на диск: они не переживут перезапуск. Подробности в widget-error.log.",
   },
   en: {
     loading: "Loading…",
@@ -411,6 +412,7 @@ const L10N = {
     connectors: "Connectors",
     connConnected: "connected",
     connMissing: "not configured",
+    stateWriteFailed: "Could not write alert state to disk: alerts will not survive a restart. See widget-error.log for details.",
   },
 };
 
@@ -757,6 +759,7 @@ function renderSettings(){
             </span>
           </div>`;
         }).join("")}
+        ${DATA.state_write_failed ? `<div style="margin-top:8px; font-size:11px; line-height:1.4; color:#d05252">&#9888; ${t("stateWriteFailed")}</div>` : ""}
       </div>
       <button class="save-btn" id="btn-save-settings">${t("save")}</button>
       <div class="saved-msg" id="saved-msg" style="display:none">${t("saved")}</div>

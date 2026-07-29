@@ -110,10 +110,17 @@ class AlertStore:
     не может испортить файл. Битый файл трактуется как отсутствующий.
     """
 
-    def __init__(self, path):
+    def __init__(self, path, log_path=None):
         self.path = path
+        # Лог кладём рядом с состоянием, то есть в каталог данных.
+        self.log_path = log_path or os.path.join(
+            os.path.dirname(os.path.abspath(path)) or ".", "widget-error.log")
         self.seen = {}
         self.pending = []
+        # False после неудачной save(). Приложение под pythonw без консоли,
+        # поэтому единственный способ узнать о сбое записи -- этот флаг
+        # (его показывает UI) и файл лога.
+        self.last_save_ok = True
 
     def load(self):
         try:
@@ -128,7 +135,28 @@ class AlertStore:
             self.pending = []
         return self
 
+    def _log_failure(self, exc):
+        """Строка в лог рядом с состоянием. Сбой самого лога проглатываем.
+
+        Логирование не имеет права уронить save(): она и так вызывается из
+        потока опроса и из потока GUI, и не должна бросать наружу.
+        """
+        try:
+            line = "%s save failed: %s: %s\n" % (
+                time.strftime("%Y-%m-%d %H:%M:%S"), type(exc).__name__, exc)
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception:
+            pass
+
     def save(self):
+        """True при успешной записи, False при сбое. Наружу не бросает.
+
+        Молчаливый сбой здесь незаметен вообще: базовая линия в памяти
+        продолжает работать, и виджет выглядит здоровым, а обещания
+        "переживает перезапуск" уже нет. Поэтому результат возвращается,
+        пишется в лог и показывается в настройках.
+        """
         payload = {"seen": self.seen, "pending": self.pending}
         folder = os.path.dirname(os.path.abspath(self.path)) or "."
         tmp = None
@@ -139,14 +167,18 @@ class AlertStore:
                 json.dump(payload, f, indent=2, ensure_ascii=False)
             os.replace(tmp, self.path)
             tmp = None
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_failure(e)
+            self.last_save_ok = False
+            return False
         finally:
             if tmp and os.path.exists(tmp):
                 try:
                     os.unlink(tmp)
                 except OSError:
                     pass
+        self.last_save_ok = True
+        return True
 
     def merge_seen(self, new_readings):
         """Обновляет только присутствующие ключи.
