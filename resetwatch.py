@@ -3,6 +3,13 @@
 Чистая логика: без GUI, без сети, без глобального состояния.
 Сравнение идёт между двумя значениями resets_at, а не с текущим временем,
 поэтому скачок системных часов не может создать ложное событие.
+
+Оговорка: часть API отдаёт не абсолютный resets_at, а "через сколько
+секунд", и тогда widget.py вынужден вычислить момент как now() + secs.
+Такое значение само зависит от часов, и сравнение двух подряд идущих
+вычисленных отметок снова стало бы сравнением с часами. Такие окна
+помечены флагом resets_at_derived, и для них сигнал сдвига границы
+отключён -- остаётся только скачок остатка, на часы не завязанный.
 """
 
 import hashlib
@@ -27,8 +34,14 @@ def _week_reading(provider):
         pct = w.get("remaining_pct")
         if resets_at is None or pct is None:
             return None
+        extra = w.get("extra") or {}
         try:
-            return {"resets_at": float(resets_at), "remaining_pct": float(pct)}
+            return {
+                "resets_at": float(resets_at),
+                "remaining_pct": float(pct),
+                # Отметка "вычислено от текущего времени" -- см. докстринг модуля.
+                "resets_at_derived": bool(extra.get("resets_at_derived")),
+            }
         except (TypeError, ValueError):
             return None
     return None
@@ -69,7 +82,12 @@ def detect_resets(prev_readings, next_readings, cfg=None, while_away=False, now=
         old = (prev_readings or {}).get(pid)
         if not old:
             continue  # первое наблюдение -- только засев базовой линии
-        boundary_moved = (new["resets_at"] - old["resets_at"]) > advance_threshold
+        # Если хоть одна из двух отметок вычислена от now(), их разность
+        # отражает в том числе сдвиг часов -- сигнал границы отключаем и
+        # полагаемся только на скачок остатка.
+        derived = bool(new.get("resets_at_derived") or old.get("resets_at_derived"))
+        boundary_moved = (not derived
+                          and (new["resets_at"] - old["resets_at"]) > advance_threshold)
         balance_jumped = (new["remaining_pct"] - old["remaining_pct"]) >= pct_threshold
         if not (boundary_moved or balance_jumped):
             continue

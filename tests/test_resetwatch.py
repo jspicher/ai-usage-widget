@@ -6,7 +6,8 @@ import tempfile
 import resetwatch
 
 
-def provider(pid="claude", ok=True, resets_at=1000.0, pct=20.0, wid="week"):
+def provider(pid="claude", ok=True, resets_at=1000.0, pct=20.0, wid="week",
+             derived=False):
     """Build a provider dict shaped like widget.py's fetch_* output."""
     return {
         "id": pid, "name": pid, "ok": ok, "meta": {}, "error": None,
@@ -14,7 +15,8 @@ def provider(pid="claude", ok=True, resets_at=1000.0, pct=20.0, wid="week"):
             {"id": "session", "label": "s", "used_pct": 5.0,
              "remaining_pct": 95.0, "resets_at": 500.0},
             {"id": wid, "label": "w", "used_pct": 100.0 - pct,
-             "remaining_pct": pct, "resets_at": resets_at},
+             "remaining_pct": pct, "resets_at": resets_at,
+             "extra": {"resets_at_derived": True} if derived else {}},
         ],
     }
 
@@ -22,7 +24,12 @@ def provider(pid="claude", ok=True, resets_at=1000.0, pct=20.0, wid="week"):
 class TestReadings(unittest.TestCase):
     def test_extracts_only_the_week_window(self):
         r = resetwatch.readings({"claude": provider()})
-        self.assertEqual(r, {"claude": {"resets_at": 1000.0, "remaining_pct": 20.0}})
+        self.assertEqual(r, {"claude": {"resets_at": 1000.0, "remaining_pct": 20.0,
+                                        "resets_at_derived": False}})
+
+    def test_carries_the_derived_timestamp_flag(self):
+        r = resetwatch.readings({"codex": provider(pid="codex", derived=True)})
+        self.assertTrue(r["codex"]["resets_at_derived"])
 
     def test_skips_provider_that_is_not_ok(self):
         self.assertEqual(resetwatch.readings({"claude": provider(ok=False)}), {})
@@ -65,6 +72,44 @@ class TestDetect(unittest.TestCase):
     def test_boundary_moving_backwards_does_not_fire(self):
         nxt = {"claude": {"resets_at": 1000.0 - 7200, "remaining_pct": 20.0}}
         self.assertEqual(resetwatch.detect_resets(self.prev, nxt), [])
+
+    def test_clock_jump_does_not_fabricate_an_event(self):
+        """Часы прыгнули вперёд на 2 ч, квота не менялась -- события нет.
+
+        Отметка вычислена от now(), поэтому она уехала вместе с часами.
+        Без флага resets_at_derived это выглядело бы как сдвиг границы окна
+        и породило бы ложное оповещение о сбросе недельной квоты.
+        """
+        prev = {"codex": {"resets_at": 1000.0, "remaining_pct": 20.0,
+                          "resets_at_derived": True}}
+        nxt = {"codex": {"resets_at": 1000.0 + 7200, "remaining_pct": 21.0,
+                         "resets_at_derived": True}}
+        self.assertEqual(resetwatch.detect_resets(prev, nxt), [])
+
+    def test_derived_timestamp_still_fires_on_a_pct_jump(self):
+        """Сигнал остатка на часах не завязан и для вычисленных отметок жив."""
+        prev = {"codex": {"resets_at": 1000.0, "remaining_pct": 20.0,
+                          "resets_at_derived": True}}
+        nxt = {"codex": {"resets_at": 1000.0 + 7200, "remaining_pct": 100.0,
+                         "resets_at_derived": True}}
+        events = resetwatch.detect_resets(prev, nxt)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["to_pct"], 100.0)
+
+    def test_one_derived_side_is_enough_to_drop_the_boundary_signal(self):
+        """Старое состояние с диска флага не имеет -- хватает нового."""
+        prev = {"codex": {"resets_at": 1000.0, "remaining_pct": 20.0}}
+        nxt = {"codex": {"resets_at": 1000.0 + 7200, "remaining_pct": 20.0,
+                         "resets_at_derived": True}}
+        self.assertEqual(resetwatch.detect_resets(prev, nxt), [])
+
+    def test_absolute_timestamps_keep_the_boundary_signal(self):
+        """Гарантия не должна ослабнуть для окон с абсолютным resets_at."""
+        prev = {"claude": {"resets_at": 1000.0, "remaining_pct": 20.0,
+                           "resets_at_derived": False}}
+        nxt = {"claude": {"resets_at": 1000.0 + 7200, "remaining_pct": 20.0,
+                          "resets_at_derived": False}}
+        self.assertEqual(len(resetwatch.detect_resets(prev, nxt)), 1)
 
     def test_missing_provider_in_next_is_skipped(self):
         self.assertEqual(resetwatch.detect_resets(self.prev, {}), [])

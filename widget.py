@@ -348,10 +348,15 @@ def fetch_codex():
             return
         pct = pick(obj, "used_percent", "usage_percent", "utilization")
         resets = iso_to_epoch(pick(obj, "resets_at", "reset_at", "reset_time"))
+        # Абсолютной отметки нет -- вычисляем от текущего времени, но
+        # обязательно помечаем результат: он зависит от системных часов, и
+        # resetwatch не должен принимать его сдвиг за сброс квоты.
+        derived = False
         if resets is None:
             secs = pick(obj, "resets_in_seconds", "reset_after_seconds")
             if secs is not None:
                 resets = time.time() + float(secs)
+                derived = True
         # длина окна помогает подписать: минуты или секунды (limit_window_seconds)
         mins = pick(obj, "window_minutes", "limit_window_minutes")
         if mins is None:
@@ -366,7 +371,9 @@ def fetch_codex():
             elif mins >= 6.5 * 24 * 60:
                 label, wid = "Неделя", "week"
         if pct is not None or resets is not None:
-            result["windows"].append(make_window(wid, label, used_pct=pct, resets_at=resets))
+            result["windows"].append(make_window(
+                wid, label, used_pct=pct, resets_at=resets,
+                extra={"resets_at_derived": True} if derived else None))
 
     add_window(rl.get("primary_window") or rl.get("primary"), "session", "Сессия (5 ч)")
     add_window(rl.get("secondary_window") or rl.get("secondary"), "week", "Неделя")
@@ -379,11 +386,14 @@ def fetch_codex():
         obj = item.get("window") or item.get("rate_limit") or item
         pct = pick(obj, "used_percent", "usage_percent")
         resets = iso_to_epoch(pick(obj, "resets_at"))
+        derived = False
         if resets is None and obj.get("resets_in_seconds") is not None:
             resets = time.time() + float(obj["resets_in_seconds"])
+            derived = True
         if pct is not None:
-            result["windows"].append(make_window(f"extra_{i}", str(title),
-                                                 used_pct=pct, resets_at=resets))
+            result["windows"].append(make_window(
+                f"extra_{i}", str(title), used_pct=pct, resets_at=resets,
+                extra={"resets_at_derived": True} if derived else None))
 
     credits = data.get("credits")
     if isinstance(credits, dict):
@@ -460,14 +470,17 @@ def _parse_opencode_payload(data, result):
         used_usd = pick(obj, "usageDollars", "usedDollars", "usage_usd", "spent", "used")
         limit_usd = pick(obj, "limitDollars", "limit_usd", "limit", "cap")
         resets = iso_to_epoch(pick(obj, "resets_at", "resetAt", "resetsAt"))
+        derived = False
         if resets is None:
             secs = pick(obj, "resetInSec", "resets_in_seconds", "resetInSeconds")
             if secs is not None:
                 resets = time.time() + float(secs)
+                derived = True
         if pct is not None or (used_usd is not None and limit_usd):
             result["windows"].append(make_window(
                 wid, label, used_pct=pct, resets_at=resets,
-                used_usd=used_usd, limit_usd=limit_usd))
+                used_usd=used_usd, limit_usd=limit_usd,
+                extra={"resets_at_derived": True} if derived else None))
     if isinstance(data.get("balance"), (int, float)):
         result["meta"]["balance_usd"] = data["balance"]
     plan = pick(data, "plan", "subscription", "tier")
