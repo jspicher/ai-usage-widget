@@ -933,9 +933,17 @@ class AlertWindowManager:
                         "window.renderAlerts && window.renderAlerts()")
                     return
                 except Exception:
-                    self.window = None
+                    # Сбой мог быть и временным, а не "окна уже нет". Ссылку
+                    # мы сейчас потеряем, поэтому окно надо разрушить прямо
+                    # здесь: безрамочное окно поверх всех остальных, на
+                    # которое никто не ссылается, закрыть больше нечем.
+                    self._destroy_locked()
             height = min(460, 90 + 130 * max(1, pending_count))
             x, y = self._corner(height)
+            # Отметка на случай, если create_window успеет зарегистрировать
+            # окно и упасть уже после этого: осиротевшее окно надо разрушить,
+            # а не просто забыть про него.
+            marker = len(webview.windows)
             try:
                 self.window = webview.create_window(
                     "Quota reset",
@@ -948,15 +956,26 @@ class AlertWindowManager:
                 )
             except Exception:
                 self.window = None
+                for orphan in list(webview.windows[marker:]):
+                    try:
+                        orphan.destroy()
+                    except Exception:
+                        pass
+
+    def _destroy_locked(self):
+        """Разрушает окно и обнуляет ссылку. Вызывать только под self.lock."""
+        if self.window is None:
+            return
+        try:
+            self.window.destroy()
+        except Exception:
+            pass
+        self.window = None
 
     def close_if_empty(self):
         with self.lock:
-            if self.window is not None and not ALERTS.pending:
-                try:
-                    self.window.destroy()
-                except Exception:
-                    pass
-                self.window = None
+            if not ALERTS.pending:
+                self._destroy_locked()
 
     def toast(self, events):
         """Дополнение к окну, а не замена: системный тост сам исчезнет."""
