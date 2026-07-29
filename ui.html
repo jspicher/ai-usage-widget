@@ -323,6 +323,10 @@ const L10N = {
     "Codex CLI не найден": "Codex CLI не найден",
     "Ошибка:": "Ошибка:",
     "Доп. лимит": "Доп. лимит",
+    resetAlert: "Оповещение о сбросе недели",
+    connectors: "Коннекторы",
+    connConnected: "подключено",
+    connMissing: "не настроено",
   },
   en: {
     loading: "Loading…",
@@ -395,6 +399,10 @@ const L10N = {
     "Codex CLI не найден": "Codex CLI not found",
     "Ошибка:": "Error:",
     "Доп. лимит": "Extra limit",
+    resetAlert: "Weekly reset alert",
+    connectors: "Connectors",
+    connConnected: "connected",
+    connMissing: "not configured",
   },
 };
 
@@ -673,7 +681,8 @@ function renderSettings(){
   const existingOnTop = $("#cfg-ontop")?.checked;
   
   // Если поля уже есть и пользователь редактирует — не пересоздаём
-  if(existingRefresh && document.activeElement?.id?.startsWith("cfg-")) return;
+  if(existingRefresh && document.activeElement?.id?.startsWith("cfg-")
+     && document.activeElement.type !== "checkbox") return;
   
   el.innerHTML = `
     <div class="settings">
@@ -710,6 +719,31 @@ function renderSettings(){
           </label>
         </div>
       </div>
+      <div class="section">
+        <div class="section-title">${t("resetAlert")}</div>
+        <div class="toggle-row">
+          <label>${t("resetAlert")}</label>
+          <label class="switch">
+            <input type="checkbox" id="cfg-alert" ${cfg.reset_alert?.enabled !== false ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-title">${t("connectors")}</div>
+        ${["claude","codex","openrouter"].map(id => {
+          const p = (DATA.providers || {})[id];
+          const on = p && p.ok;
+          const src = p && p.meta && p.meta.key_source;
+          return `<div class="field" style="align-items:center">
+            <label>${esc(p ? p.name : id)}</label>
+            <span style="font-size:11px; opacity:.8">
+              <span style="color:${on ? '#3ecf8e' : '#d05252'}">&#9679;</span>
+              ${on ? t("connConnected") : t("connMissing")}${src ? " &middot; " + esc(src) : ""}
+            </span>
+          </div>`;
+        }).join("")}
+      </div>
       <button class="save-btn" id="btn-save-settings">${t("save")}</button>
       <div class="saved-msg" id="saved-msg" style="display:none">${t("saved")}</div>
     </div>
@@ -724,7 +758,8 @@ function renderSettings(){
         width: parseInt($("#cfg-width").value) || 380,
         height: parseInt($("#cfg-height").value) || 600,
         on_top: $("#cfg-ontop").checked,
-      }
+      },
+      reset_alert: { enabled: $("#cfg-alert").checked },
     };
     const ok = await window.pywebview.api.save_config_api(newCfg);
     if(ok === true){
