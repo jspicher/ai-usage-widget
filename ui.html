@@ -493,7 +493,7 @@ function renderOverview(){
       for(const win of wins){
         const low = win.remaining_pct != null && win.remaining_pct <= 15 ? "low" : "";
         html += `<div class="sub">
-            <span>${esc(t(win.label))} · ${t("remaining")}</span>
+            <span>${esc(t(win.label))} · ${win.remaining_pct != null ? pctText(win) + "% " : ""}${t("remaining")}</span>
             <span>${win.resets_at ? t("resetsIn") + " " + fmtCountdown(win.resets_at) : ""}</span>
           </div>`;
         if(id === "opencode"){
