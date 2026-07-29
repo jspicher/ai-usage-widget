@@ -599,18 +599,18 @@ def fetch_openrouter():
         "used_usd": round(used, 2),
         "week_usd": None,
     }
-    # Недельный расход и метка ключа не критичны: сбой здесь не роняет карточку.
+    # Недельный расход не критичен: сбой здесь не роняет карточку.
+    # Метку ключа и его маску не собираем вообще: UI их не показывает, а
+    # производные от ключа данные незачем гонять в снимок и в WebView.
     try:
         key_data = (http_get_json(OPENROUTER_KEY_URL, headers) or {}).get("data") or {}
         weekly = key_data.get("usage_weekly")
         if weekly is not None:
             balance["week_usd"] = round(float(weekly), 2)
-        result["meta"]["label"] = key_data.get("label")
     except Exception:
         pass
 
     result["meta"]["balance"] = balance
-    result["meta"]["key_masked"] = (key[:8] + "…" + key[-4:]) if len(key) > 14 else "…"
     result["ok"] = True
     return result
 
@@ -1082,6 +1082,24 @@ def refresh_loop():
         STATE.shutdown_event.wait(timeout=max(15, int(CFG.get("refresh_interval_sec", 300))))
 
 
+REDACTED = "***"
+
+
+def config_for_ui():
+    """Копия конфига без секретов -- всё, что уходит в WebView.
+
+    Ключ OpenRouter пользователь может положить в config.json, и без этой
+    чистки он открытым текстом улетал бы в JS-контекст при каждом опросе
+    (раз в 5 секунд). Странице он не нужен ни для чего: настройки его не
+    читают и не показывают.
+    """
+    cfg = copy.deepcopy(CFG)
+    section = cfg.get("openrouter")
+    if isinstance(section, dict) and section.get("api_key"):
+        section["api_key"] = REDACTED
+    return cfg
+
+
 class JsApi:
     def get_data(self):
         with STATE.lock:
@@ -1093,7 +1111,9 @@ class JsApi:
             snap["on_top"] = CFG["window"].get("on_top", True)
         except Exception:
             snap["on_top"] = True
-        snap["_config"] = copy.deepcopy(CFG)
+        snap["_config"] = config_for_ui()
+        with ALERTS_LOCK:
+            snap["state_write_failed"] = not ALERTS.last_save_ok
         return snap
 
     def get_token_status(self):
@@ -1258,12 +1278,20 @@ class JsApi:
         return new_val
 
     def get_config(self):
-        return copy.deepcopy(CFG)
+        return config_for_ui()
 
     def save_config_api(self, cfg):
         global CFG
         try:
             old_lang = CFG.get("language", "en")
+            # Настройки ключ OpenRouter не редактируют, но если он когда-то
+            # приедет обратно уже замазанным (см. config_for_ui), записать
+            # эту заглушку в config.json значило бы стереть ключ.
+            section = cfg.get("openrouter")
+            if isinstance(section, dict) and section.get("api_key") == REDACTED:
+                section = dict(section)
+                section.pop("api_key", None)
+                cfg = dict(cfg, openrouter=section)
             for k, v in cfg.items():
                 if isinstance(v, dict) and isinstance(CFG.get(k), dict):
                     CFG[k].update(v)
