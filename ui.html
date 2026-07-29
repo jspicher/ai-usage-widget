@@ -37,6 +37,13 @@
   header button:hover{background:#1d1d21; color:#e8e8ec}
   header button.pin-on{color:var(--cl-accent)}
   header button:focus-visible{outline:1px solid #5a5a64}
+  .app-message{
+    position:absolute; z-index:200; top:46px; left:10px; right:10px;
+    padding:9px 11px; border:1px solid #703d42; border-radius:7px;
+    background:#2b191c; color:#f1b7bd; box-shadow:0 4px 16px rgba(0,0,0,.35);
+    font-size:11px; line-height:1.4; -webkit-user-select:text; user-select:text;
+  }
+  .app-message[hidden]{display:none}
 
   #pages{flex:1; overflow:hidden; position:relative}
   .page{position:absolute; inset:0; overflow-y:auto; display:none}
@@ -220,6 +227,7 @@
     <button id="btn-tray" title="Minimize to tray" aria-label="Minimize to tray">⎯</button>
     <button id="btn-close" title="Close" aria-label="Close">✕</button>
   </header>
+  <div class="app-message" id="app-message" role="alert" aria-live="assertive" hidden></div>
 
   <div id="pages">
     <div class="page active" id="page-overview">
@@ -434,8 +442,24 @@ function terr(value){
   let message = translated === key
     ? t("errorGeneric")
     : template(translated, value.params || {});
-  if(value.detail) message += ` (${String(value.detail)})`;
+  // Tracebacks are useful in widget-error.log, not inside a compact error card.
+  if(value.detail && value.code !== "internal_error"){
+    message += ` (${String(value.detail)})`;
+  }
   return message;
+}
+
+let appMessageTimer = null;
+function showAppError(error){
+  const message = $("#app-message");
+  if(!message) return;
+  message.textContent = terr(error) || t("errorGeneric");
+  message.hidden = false;
+  if(appMessageTimer) clearTimeout(appMessageTimer);
+  appMessageTimer = setTimeout(() => {
+    message.hidden = true;
+    appMessageTimer = null;
+  }, 8000);
 }
 
 function updateTitles(){
@@ -966,12 +990,7 @@ window.addEventListener("pywebviewready", () => {
       const cfgOnTop = $("#cfg-ontop");
       if(cfgOnTop) cfgOnTop.checked = value;
     } else if(result && result.error){
-      const message = $("#saved-msg");
-      if(message){
-        message.textContent = terr(result.error);
-        message.classList.add("error");
-        message.style.display = "block";
-      }
+      showAppError(result.error);
     }
   });
   setInterval(async () => {

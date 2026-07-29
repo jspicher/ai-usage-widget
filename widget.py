@@ -21,7 +21,6 @@ import sys
 import tempfile
 import threading
 import time
-import traceback
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -142,9 +141,19 @@ def normalize_config(value):
 
     source_window = source.get("window") if isinstance(source.get("window"), dict) else {}
     cfg["window"]["width"] = _number(
-        source_window.get("width"), 380, 200, 800, integer=True)
+        source_window.get("width"),
+        DEFAULT_CONFIG["window"]["width"],
+        200,
+        800,
+        integer=True,
+    )
     cfg["window"]["height"] = _number(
-        source_window.get("height"), 400, 300, 1200, integer=True)
+        source_window.get("height"),
+        DEFAULT_CONFIG["window"]["height"],
+        300,
+        1200,
+        integer=True,
+    )
     for key in ("x", "y"):
         raw = source_window.get(key)
         cfg["window"][key] = None if raw is None else _number(raw, None, integer=True)
@@ -960,6 +969,10 @@ TRAY = TrayManager()
 class AlertApi:
     """Expose the alert window API."""
 
+    def get_language(self):
+        language = CFG.get("language", DEFAULT_CONFIG["language"])
+        return language if language in ("en", "ru") else DEFAULT_CONFIG["language"]
+
     def get_alerts(self):
         with ALERTS_LOCK:
             return copy.deepcopy(ALERTS.pending)
@@ -1033,8 +1046,10 @@ class AlertWindowManager:
             # forgotten.
             marker = len(webview.windows)
             try:
+                language = CFG.get("language", DEFAULT_CONFIG["language"])
+                title = "Сброс квоты" if language == "ru" else "Quota reset"
                 self.window = webview.create_window(
-                    "Quota reset",
+                    title,
                     url=os.path.join(APP_DIR, "alert.html"),
                     js_api=AlertApi(),
                     width=self.WIDTH, height=height, x=x, y=y,
@@ -1073,11 +1088,20 @@ class AlertWindowManager:
         if icon is None:
             return
         names = {"claude": "Claude Code", "codex": "Codex CLI"}
+        language = CFG.get("language", DEFAULT_CONFIG["language"])
         if len(events) == 1:
-            body = "%s: weekly quota reset" % names.get(
-                events[0]["provider"], events[0]["provider"])
+            provider = names.get(events[0]["provider"], events[0]["provider"])
+            body = (
+                "%s: недельная квота сброшена" % provider
+                if language == "ru"
+                else "%s: weekly quota reset" % provider
+            )
         else:
-            body = "%d weekly quotas reset" % len(events)
+            body = (
+                "Сброшено недельных квот: %d" % len(events)
+                if language == "ru"
+                else "%d weekly quotas reset" % len(events)
+            )
         try:
             icon.notify(body, "AI Usage Widget")
         except Exception:
@@ -1145,12 +1169,11 @@ def refresh_all():
                 name = futures[future]
                 try:
                     providers[name] = future.result()
-                except Exception:
+                except Exception as exc:
+                    _log_failure("%s refresh" % name, exc)
                     providers[name] = {"id": name, "name": name, "ok": False,
                                        "windows": [], "meta": {},
-                                       "error": error_info(
-                                           "internal_error",
-                                           detail=traceback.format_exc(limit=2))}
+                                       "error": error_info("internal_error")}
         with STATE.lock:
             STATE.snapshot = {"updated_at": time.time(), "providers": providers}
         try:

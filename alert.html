@@ -1,7 +1,8 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
+<title>Quota reset</title>
 <style>
   *{box-sizing:border-box}
   body{margin:0; background:#101012; color:#ececf1; font:12px/1.45 "Segoe UI",system-ui,sans-serif;
@@ -10,12 +11,13 @@
   .head{display:flex; align-items:center; gap:8px; margin-bottom:10px}
   .head .bolt{color:#f5a623; font-size:14px}
   .head h1{font-size:12px; font-weight:600; margin:0; letter-spacing:.02em}
-  .head .all{margin-left:auto; font-size:10.5px; opacity:.6; cursor:pointer; text-decoration:underline}
+  .head .all{margin-left:auto; padding:0; border:0; background:none; color:inherit;
+             font:inherit; font-size:10.5px; opacity:.6; cursor:pointer; text-decoration:underline}
+  .head .all:focus-visible,.btn:focus-visible{outline:2px solid #ececf1; outline-offset:2px}
   .row{background:#17171b; border:1px solid #26262c; border-radius:8px;
        padding:10px 12px; margin-bottom:8px}
   .row .who{font-size:12px; font-weight:600; margin-bottom:3px}
   .row .delta{font-size:11px; opacity:.85}
-  .row .delta b{color:#3ecf8e; font-weight:600}
   .row .when{font-size:10px; opacity:.5; margin-top:3px}
   .row .away{display:inline-block; margin-top:5px; font-size:9.5px; letter-spacing:.04em;
              text-transform:uppercase; background:#2b2410; color:#f5a623;
@@ -35,32 +37,70 @@
   <div class="head">
     <span class="bolt">&#9889;</span>
     <h1 id="title">Quota reset</h1>
-    <span class="all" id="all" style="display:none">Dismiss all</span>
+    <button type="button" class="all" id="all" style="display:none">Dismiss all</button>
   </div>
   <div id="rows"></div>
 </div>
 <script>
 const NAMES = {claude:"Claude Code", codex:"Codex CLI"};
+let LANG = "en";
+const L10N = {
+  en: {
+    title:"Quota reset",
+    dismissAll:"Dismiss all",
+    noAlerts:"No alerts",
+    close:"Close",
+    weeklyChange:"Weekly {from}% → {to}% remaining",
+    detected:"detected {time}",
+    whileAway:"while you were away",
+    dismiss:"Dismiss",
+  },
+  ru: {
+    title:"Сброс квоты",
+    dismissAll:"Закрыть все",
+    noAlerts:"Нет оповещений",
+    close:"Закрыть",
+    weeklyChange:"Неделя: {from}% → {to}% остатка",
+    detected:"обнаружено в {time}",
+    whileAway:"пока вас не было",
+    dismiss:"Закрыть",
+  },
+};
+
+function t(key, params={}){
+  const text = L10N[LANG]?.[key] || L10N.en[key] || key;
+  return text.replace(/\{([a-z]+)\}/gi, (_, name) =>
+    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : "");
+}
 
 function esc(s){ return String(s).replace(/[&<>"']/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
 function clock(epoch){
   const d = new Date(epoch * 1000);
-  return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+  return d.toLocaleTimeString(LANG === "ru" ? "ru-RU" : "en-US",
+    {hour:"2-digit", minute:"2-digit"});
 }
 
 async function renderAlerts(){
   if(!window.pywebview || !window.pywebview.api) return;
-  const alerts = await window.pywebview.api.get_alerts();
+  const [alerts, language] = await Promise.all([
+    window.pywebview.api.get_alerts(),
+    window.pywebview.api.get_language(),
+  ]);
+  LANG = language === "ru" ? "ru" : "en";
+  document.documentElement.lang = LANG;
+  document.title = t("title");
+  document.getElementById("title").textContent = t("title");
+  document.getElementById("all").textContent = t("dismissAll");
   const rows = document.getElementById("rows");
   document.getElementById("all").style.display = alerts.length > 1 ? "inline" : "none";
   if(!alerts.length){
     // Always a working close path -- even if this window was ever created
     // with nothing pending (a race the Python side also guards against),
     // the user is never stuck with an unclosable always-on-top window.
-    rows.innerHTML = '<div class="empty"><div class="empty-text">No alerts</div>' +
-      '<button class="btn" id="closeEmpty">Close</button></div>';
+    rows.innerHTML = `<div class="empty"><div class="empty-text">${esc(t("noAlerts"))}</div>` +
+      `<button class="btn" id="closeEmpty">${esc(t("close"))}</button></div>`;
     document.getElementById("closeEmpty").addEventListener("click", async () => {
       await window.pywebview.api.dismiss_all();
       renderAlerts();
@@ -70,10 +110,12 @@ async function renderAlerts(){
   rows.innerHTML = alerts.map(a => `
     <div class="row">
       <div class="who">${esc(NAMES[a.provider] || a.provider)}</div>
-      <div class="delta">Weekly ${Math.round(a.from_pct)}% &rarr; <b>${Math.round(a.to_pct)}%</b> remaining</div>
-      <div class="when">detected ${clock(a.detected_at)}</div>
-      ${a.while_away ? '<div class="away">while you were away</div>' : ''}
-      <button class="btn" data-id="${esc(a.id)}">Dismiss</button>
+      <div class="delta">${esc(t("weeklyChange", {
+        from:Math.round(a.from_pct), to:Math.round(a.to_pct)
+      }))}</div>
+      <div class="when">${esc(t("detected", {time:clock(a.detected_at)}))}</div>
+      ${a.while_away ? `<div class="away">${esc(t("whileAway"))}</div>` : ''}
+      <button class="btn" data-id="${esc(a.id)}">${esc(t("dismiss"))}</button>
     </div>`).join("");
   rows.querySelectorAll(".btn").forEach(b =>
     b.addEventListener("click", async () => {

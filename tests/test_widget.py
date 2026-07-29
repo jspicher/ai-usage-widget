@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import subprocess
@@ -82,6 +83,15 @@ class TestConfig(WidgetTestCase):
         self.assertEqual(cfg["window"]["height"], 400)
         self.assertIsNone(cfg["window"]["x"])
         self.assertIsNone(cfg["window"]["y"])
+
+    def test_window_fallbacks_follow_default_config(self):
+        defaults = copy.deepcopy(widget.DEFAULT_CONFIG)
+        defaults["window"]["width"] = 444
+        defaults["window"]["height"] = 555
+        with mock.patch.object(widget, "DEFAULT_CONFIG", defaults):
+            cfg = widget.normalize_config({"window": {}})
+        self.assertEqual(cfg["window"]["width"], 444)
+        self.assertEqual(cfg["window"]["height"], 555)
 
     def test_save_is_atomic_and_leaves_no_temporary_file(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -348,6 +358,40 @@ class TestPolling(WidgetTestCase):
             widget.STATE.refresh_wake_event.set()
             thread.join(1)
         self.assertFalse(thread.is_alive())
+
+    def test_internal_provider_error_omits_traceback_detail(self):
+        widget.STATE = widget.State()
+        ok_provider = {
+            "id": "provider",
+            "name": "provider",
+            "ok": True,
+            "windows": [],
+            "meta": {},
+            "error": None,
+        }
+        with (
+            mock.patch.object(
+                widget, "fetch_claude", side_effect=RuntimeError("boom")),
+            mock.patch.object(widget, "fetch_codex", return_value=ok_provider),
+            mock.patch.object(widget, "fetch_openrouter", return_value=ok_provider),
+            mock.patch.object(widget, "process_reset_alerts"),
+            mock.patch.object(widget, "_log_failure"),
+            mock.patch.object(widget.TRAY, "update_tooltip"),
+        ):
+            widget.refresh_all()
+        error = widget.STATE.snapshot["providers"]["claude"]["error"]
+        self.assertEqual(error, {"code": "internal_error"})
+
+
+class TestAlertLocalization(WidgetTestCase):
+    def test_alert_api_exposes_current_supported_language(self):
+        widget.CFG = widget.normalize_config({"language": "ru"})
+        self.assertEqual(widget.AlertApi().get_language(), "ru")
+        widget.CFG["language"] = "unsupported"
+        self.assertEqual(
+            widget.AlertApi().get_language(),
+            widget.DEFAULT_CONFIG["language"],
+        )
 
 
 class TestCli(unittest.TestCase):

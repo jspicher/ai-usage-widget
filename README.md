@@ -185,6 +185,10 @@ Example `config.json`:
 }
 ```
 
+Only documented configuration keys are retained in memory. Unsupported or
+retired hand-added keys are ignored when loading and are omitted the next time
+the widget saves `config.json`.
+
 Defaults are 300-second refresh, English, and a 380x400 window. Russian is still available from the language dropdown, it's just no longer the default.
 
 The window remembers a manual drag-resize the same way it remembers position -- not just where you left it, but the size you last set it to.
