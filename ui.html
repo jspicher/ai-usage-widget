@@ -44,6 +44,10 @@
   .page{position:absolute; inset:0; overflow-y:auto; display:none}
   .page.active{display:block}
   .page::-webkit-scrollbar{width:0}
+  #page-settings::-webkit-scrollbar{width:8px}
+  #page-settings::-webkit-scrollbar-track{background:transparent}
+  #page-settings::-webkit-scrollbar-thumb{background:#33333a; border-radius:4px}
+  #page-settings::-webkit-scrollbar-thumb:hover{background:#44444d}
 
   nav{
     flex:0 0 34px; display:flex; align-items:stretch; border-top:1px solid var(--shell-line);
@@ -169,6 +173,8 @@
   .settings .section{margin-bottom:20px}
   .settings .section-title{font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:#5c5c64; margin-bottom:10px}
   .settings .field{margin-bottom:12px}
+  .settings .field-row{display:flex; gap:10px}
+  .settings .field-row .field{flex:1; min-width:0; margin-bottom:12px}
   .settings label{display:block; font-size:11px; color:#8b8b93; margin-bottom:4px}
   .settings input[type="number"], .settings input[type="text"]{
     width:100%; padding:8px 10px; background:#1a1a1e; border:1px solid #2a2a2e;
@@ -703,13 +709,15 @@ function renderSettings(){
       </div>
       <div class="section">
         <div class="section-title">${t("winSection")}</div>
-        <div class="field">
-          <label>${t("width")}</label>
-          <input type="number" id="cfg-width" value="${cfg.window?.width || 380}" min="200" max="800">
-        </div>
-        <div class="field">
-          <label>${t("height")}</label>
-          <input type="number" id="cfg-height" value="${cfg.window?.height || 600}" min="300" max="1200">
+        <div class="field-row">
+          <div class="field">
+            <label>${t("width")}</label>
+            <input type="number" id="cfg-width" value="${cfg.window?.width || 380}" min="200" max="800">
+          </div>
+          <div class="field">
+            <label>${t("height")}</label>
+            <input type="number" id="cfg-height" value="${cfg.window?.height || 600}" min="300" max="1200">
+          </div>
         </div>
         <div class="toggle-row">
           <label>${t("onTop")}</label>
