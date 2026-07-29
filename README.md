@@ -1,24 +1,23 @@
-# AI Usage Widget for Windows — Claude Code & Codex CLI Usage Limit Tracker
+# AI Usage Widget for Windows -- Claude Code, Codex CLI & OpenRouter Usage Tracker
 
-A free, open-source Windows desktop widget for monitoring **Claude Code** and **Codex CLI** usage limits in real time. It shows 5-hour and weekly quotas, reset countdowns, account status, and usage percentages in an always-on-top window and the Windows system tray.
+A free, open-source Windows desktop widget for monitoring **Claude Code**, **Codex CLI**, and **OpenRouter** usage in real time. It shows session and weekly quotas, reset countdowns, account status, and an OpenRouter dollar balance in an always-on-top window and the Windows system tray -- plus a persistent alert when a weekly quota resets.
 
-[![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows)](https://github.com/Trafalgardi/ai-usage-widget/releases/latest)
-[![Latest release](https://img.shields.io/github/v/release/Trafalgardi/ai-usage-widget)](https://github.com/Trafalgardi/ai-usage-widget/releases/latest)
+[![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows)](https://github.com/jspicher/ai-usage-widget)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Download:** [Latest Windows release](https://github.com/Trafalgardi/ai-usage-widget/releases/latest)
+This is a fork of [Trafalgardi/ai-usage-widget](https://github.com/Trafalgardi/ai-usage-widget) with a third provider, weekly reset alerts, and several fixes described below.
 
 ![AI Usage Widget overview](preview/shot_overview.png)
 
-## Claude Code and Codex usage monitor for Windows
+## Claude Code, Codex, and OpenRouter usage monitor for Windows
 
-AI Usage Widget helps Windows users track Claude Code and Codex CLI rate limits without repeatedly opening each CLI. It works as an always-on-top desktop widget and as a system tray quota monitor.
+AI Usage Widget helps Windows users track Claude Code, Codex CLI, and OpenRouter usage without repeatedly opening each CLI or dashboard. It works as an always-on-top desktop widget and as a system tray quota monitor.
 
 Use it as a:
 
 - Claude Code usage widget for Windows
 - Codex CLI usage tracker
-- AI quota monitor
+- OpenRouter credit balance monitor
 - Rate-limit and reset-time tracker
 - Windows system tray usage monitor
 
@@ -26,34 +25,43 @@ Use it as a:
 
 ### Overview
 
-- Real-time usage limits for Claude Code and Codex CLI
-- Current 5-hour session remaining
-- Weekly usage remaining
-- Reset date and countdown timer
+- Real-time usage for Claude Code, Codex CLI, and OpenRouter
+- Session and weekly usage shown together, each with its own remaining percentage and reset countdown
+- OpenRouter credit balance in dollars, since it isn't a time-windowed quota
 - Plan and account status
 - Additional model limits when available
 
 ### Screens
 
-1. **Overview** — current 5-hour session remaining for both services with reset timer
-2. **Claude** — session, weekly usage, and Opus weekly usage when available
-3. **Codex** — session, weekly usage, plan, and additional model limits
-4. **Settings** — refresh interval, window size, language, and always-on-top mode
+1. **Overview** -- every connected provider at a glance: Claude's session and weekly rows, Codex's weekly row, and OpenRouter's dollar balance
+2. **Claude** -- session, weekly usage, and Opus weekly usage when available
+3. **Codex** -- session and weekly usage, plan, and additional model limits
+4. **OpenRouter** -- remaining credit balance, total and used, and spend for the current week
+5. **Settings** -- refresh interval, window size, language, always-on-top mode, and the weekly reset alert toggle
 
 ### Status indicators
 
-- **Active** — token is valid
-- **Expiring** — less than one hour remains
-- **Expired** — login is required
-- **Red usage bar** — 85% or more of the limit has been consumed
-- **Refresh countdown** — seconds until the next automatic update
+- **Active** -- token is valid
+- **Expiring** -- less than one hour remains
+- **Expired** -- login is required
+- **Red usage bar** -- 85% or more of the limit has been consumed
+- **Refresh countdown** -- seconds until the next automatic update
+
+### Weekly reset alerts
+
+The widget watches each provider's weekly window and raises a dedicated alert window when it resets, so a quota refilling doesn't go unnoticed between checks.
+
+- A small always-on-top window appears in the corner of the screen. It does not steal keyboard focus, and it stays until you dismiss it.
+- Detection compares two `resets_at` timestamps to each other, never against the wall clock -- so changing your system clock cannot fabricate an alert. A reset is flagged when the weekly window's reset timestamp advances by more than an hour, or when the remaining percentage jumps by 10 or more points.
+- Resets are tracked across restarts in both directions: if a reset happened while the app was closed, it's reported and tagged "while you were away"; an alert you haven't dismissed yet reappears the next time the app starts.
+- Configurable in `config.json` under a `reset_alert` block (`enabled`, `pct_jump_threshold`, `resets_at_advance_sec`), with a toggle in Settings.
 
 ### Windows system tray
 
 Minimize the app to the Windows system tray while it continues updating in the background.
 
-- Orange percentage icon — Claude Code
-- Green percentage icon — Codex CLI
+- Orange percentage icon -- Claude Code
+- Green percentage icon -- Codex CLI
 - Hover for detailed usage information
 - Right-click to show, refresh, or exit
 
@@ -62,10 +70,6 @@ Minimize the app to the Windows system tray while it continues updating in the b
 When a token expires, the widget displays a **Login via CLI** button and starts `claude auth login` or `codex login` in a separate window.
 
 ## Download and installation
-
-### Recommended: Windows release
-
-Download the latest packaged version from the [Releases page](https://github.com/Trafalgardi/ai-usage-widget/releases/latest).
 
 ### Run from source
 
@@ -89,51 +93,66 @@ python widget.py
 
 Or double-click `start_widget.vbs` to launch without a console window.
 
+### Build your own executable
+
+See [Build a Windows executable](#build-a-windows-executable) below if you'd rather run a single `.exe` than launch from source.
+
 ### Start automatically with Windows
 
 1. Press `Win+R`.
 2. Enter `shell:startup`.
-3. Add a shortcut to `start_widget.vbs` or the packaged executable.
+3. Add a shortcut to `start_widget.vbs` or your packaged executable.
 
 ## Screenshots
 
 ![Claude Code usage limits](preview/shot_claude.png)
 ![Codex CLI usage limits](preview/shot_codex.png)
+![OpenRouter credit balance](preview/shot_openrouter.png)
 ![Widget settings](preview/shot_settings.png)
-![Windows system tray usage icons](preview/shot_tray.png)
+![Weekly reset alert](preview/shot_alert.png)
+
+All screenshots above are captured against seeded sample data, not a real account.
 
 ## Privacy and data sources
 
-The widget sends requests only to the service endpoints used for retrieving account usage. Authentication tokens are read locally from the same credential files used by the official CLIs.
+The widget sends requests only to the service endpoints used for retrieving account usage. Credentials are read locally from the same files used by the official CLIs, or from environment variables.
 
-| Service | Local credential file | Usage endpoint |
-|---|---|---|
-| Claude Code | `~/.claude/.credentials.json` | `api.anthropic.com/api/oauth/usage` |
-| Codex CLI | `~/.codex/auth.json` | `chatgpt.com/backend-api/wham/usage` |
+| Service | Local credential source | Usage endpoint | Documented? |
+|---|---|---|---|
+| Claude Code | `~/.claude/.credentials.json` | `api.anthropic.com/api/oauth/usage` | No -- undocumented, may change |
+| Codex CLI | `~/.codex/auth.json` | `chatgpt.com/backend-api/wham/usage` | No -- undocumented, may change |
+| OpenRouter | `OPENROUTER_API_KEY` env var, or `openrouter.api_key` in `config.json` | `openrouter.ai/api/v1/credits`, `openrouter.ai/api/v1/key` | Yes -- publicly documented and supported |
 
-You must already be logged in through each CLI using `/login`, `claude auth login`, or `codex login`.
+You must already be logged in through each CLI using `/login`, `claude auth login`, or `codex login`. For OpenRouter, set `OPENROUTER_API_KEY` in your environment; the app never writes an API key to disk itself.
 
-The usage endpoints are undocumented and may change. If a card stops updating after a CLI update, open an issue with the error details.
+The Claude and Codex usage endpoints are undocumented and may change. If a card stops updating after a CLI update, open an issue with the error details. OpenRouter's `/credits` and `/key` endpoints are part of its public API and are expected to remain stable.
 
 ## Settings
 
 The Settings screen supports:
 
-- Refresh interval: 15–600 seconds
-- Window width: 200–800 px
-- Window height: 300–1200 px
+- Refresh interval: 15-600 seconds
+- Window width and height, side by side (200-800 px wide, 300-1200 px tall)
 - Always-on-top mode
+- Weekly reset alert on/off
+- Read-only connector status for each provider (connected / not configured, and where the credential came from)
 - Russian and English interface languages
+- A visible scrollbar on this page only, since it's the one screen with more content than fits at the default window size
 
 Example `config.json`:
 
 ```json
 {
   "language": "en",
-  "refresh_interval_sec": 60,
+  "refresh_interval_sec": 300,
+  "reset_alert": {
+    "enabled": true,
+    "pct_jump_threshold": 10,
+    "resets_at_advance_sec": 3600
+  },
   "window": {
     "width": 380,
-    "height": 600,
+    "height": 400,
     "on_top": true,
     "x": null,
     "y": null
@@ -141,11 +160,15 @@ Example `config.json`:
 }
 ```
 
+Defaults are 300-second refresh, English, and a 380x400 window. Russian is still available from the language dropdown, it's just no longer the default.
+
+The window remembers a manual drag-resize the same way it remembers position -- not just where you left it, but the size you last set it to.
+
 ## Troubleshooting
 
 ### HTTP 401 or 403
 
-The token has expired. Use **Login via CLI** or log in manually.
+The token or API key has expired or been rejected. Use **Login via CLI** for Claude/Codex, or check `OPENROUTER_API_KEY` for OpenRouter.
 
 ### Empty window
 
@@ -155,6 +178,10 @@ Install Microsoft Edge WebView2 Runtime. It is included with Windows 11 and most
 
 The remaining quota is 15% or less.
 
+### Codex card shows the wrong window length
+
+Codex's API reports a rate-limit window's length as `limit_window_seconds`, but some plans only expose it that way rather than as `window_minutes`. If a card is mislabeling a multi-day window as a 5-hour session (or vice versa), make sure you're on a build that reads `limit_window_seconds` as a fallback -- this was a known issue on plans that return only a weekly window with no session window (`secondary_window: null`).
+
 ### Python icon instead of the app icon
 
 Restart the application. The icon is applied after window creation.
@@ -163,11 +190,11 @@ Restart the application. The icon is applied after window creation.
 
 ### What does AI Usage Widget track?
 
-It tracks available Claude Code and Codex CLI usage limits, including session limits, weekly limits, reset times, and account status when exposed by the service.
+It tracks available Claude Code and Codex CLI usage limits (session, weekly, reset times, account status when exposed by the service) and your OpenRouter credit balance.
 
 ### Is this an API cost tracker?
 
-No. It focuses on subscription and CLI usage limits rather than API billing or token costs.
+Partly. For Claude Code and Codex CLI it focuses on subscription and CLI usage limits rather than API billing. For OpenRouter it does show your account's dollar credit balance, since that's how OpenRouter exposes usage.
 
 ### Does it work on Windows 10 and Windows 11?
 
@@ -175,44 +202,59 @@ Yes. The app is intended for current Windows 10 and Windows 11 systems with WebV
 
 ### Does it upload my tokens anywhere?
 
-The application reads the local CLI credential files and requests usage information from the relevant service endpoints. It does not require a separate account or external database.
+No. The application reads local CLI credential files and an optional environment variable, and requests usage information directly from each service's own endpoint. It does not require a separate account or external database, and it does not write your OpenRouter key to disk.
 
-### Is the project affiliated with Anthropic or OpenAI?
+### Is the project affiliated with Anthropic, OpenAI, or OpenRouter?
 
-No. This is an independent open-source project and is not an official Anthropic or OpenAI product.
+No. This is an independent open-source project and is not an official Anthropic, OpenAI, or OpenRouter product.
 
 ## Development
 
 ### Dependencies
 
-- `pywebview` — WebView2-based window
-- `pystray` — Windows system tray integration
-- `Pillow` — tray icon generation
+- `pywebview` -- WebView2-based window
+- `pystray` -- Windows system tray integration
+- `Pillow` -- tray icon generation
 
 ### Project structure
 
 ```text
 usage-widget/
 ├── widget.py
+├── resetwatch.py
 ├── ui.html
+├── alert.html
 ├── config.json
 ├── icon/
 ├── preview/
 ├── docs/
+├── tests/
 ├── install.bat
 └── start_widget.vbs
 ```
+
+### Tests
+
+```bash
+python -m unittest discover -s tests -t . -v
+```
+
+Runs 23 tests covering weekly reset detection logic and alert-state persistence.
 
 ### Build a Windows executable
 
 ```bash
 pip install pyinstaller
-python -m PyInstaller --onefile --windowed --name="AI-Usage" --icon="icon/app.ico" --add-data "ui.html;." --add-data "icon/512.png;icon" --add-data "icon/app.ico;icon" --collect-all pywebview --collect-all pystray widget.py
+python -m PyInstaller --onefile --windowed --name="AI-Usage" --icon="icon/app.ico" --add-data "ui.html;." --add-data "alert.html;." --add-data "icon/512.png;icon" --add-data "icon/app.ico;icon" --collect-all pywebview --collect-all pystray widget.py
 ```
 
 ## Website
 
 The project website source is stored in [`docs/`](docs/) and is ready to be published with GitHub Pages.
+
+## Credits
+
+This project is a fork of [Trafalgardi/ai-usage-widget](https://github.com/Trafalgardi/ai-usage-widget). Vendor marks (the OpenAI mark for Codex, and the OpenRouter mark) are drawn as inline SVG rather than font glyphs, since the previous font-glyph approach rendered as a blank box in WebView2.
 
 ## License
 
