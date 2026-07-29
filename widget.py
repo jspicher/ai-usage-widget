@@ -34,9 +34,27 @@ try:
 except ImportError:
     TRAY_AVAILABLE = False
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+# Каталог бандла и каталог данных -- это РАЗНЫЕ вещи, и сливать их обратно
+# в одну переменную нельзя.
+#
+# В onefile-сборке PyInstaller распаковывает ui.html / alert.html / icon во
+# временный каталог _MEIxxxxx и удаляет его при выходе процесса. Читать
+# оттуда обязательно (иначе приложение не найдёт собственный HTML), а вот
+# писать туда бессмысленно: config.json и reset-alert-state.json исчезали бы
+# вместе с каталогом при каждом выходе. Ошибки при этом нет ни одной --
+# запись успешна, файл просто испаряется, и обещанное "переживает
+# перезапуск" молча не работает вообще никогда.
+#
+# Поэтому: APP_DIR -- только упакованные ресурсы (read-only),
+# DATA_DIR -- только пользовательское состояние (read-write).
+if getattr(sys, "frozen", False):
+    APP_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
+    DATA_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR = APP_DIR
 HOME = os.path.expanduser("~")
-CONFIG_PATH = os.path.join(APP_DIR, "config.json")
+CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 
 DEFAULT_CONFIG = {
     "refresh_interval_sec": 300,
@@ -600,10 +618,12 @@ STATE = State()
 CFG = load_config()
 # Set True only once the startup window.resize() workaround (see main()) confirms
 # success. Guards against persisting a chrome-shrunken size on exit if that resize
-# ever fails -- see JsApi.close() and the exit block in main().
+# ever fails -- see persist_window_geometry().
 _INITIAL_SIZE_OK = False
 
-ALERT_STATE_PATH = os.path.join(APP_DIR, "reset-alert-state.json")
+# DATA_DIR, а не APP_DIR: состояние оповещений обязано пережить выход
+# процесса даже в onefile-сборке -- см. комментарий у DATA_DIR.
+ALERT_STATE_PATH = os.path.join(DATA_DIR, "reset-alert-state.json")
 ALERTS = resetwatch.AlertStore(ALERT_STATE_PATH).load()
 # Защищает ALERTS (seen/pending) и сопутствующий save() от гонки между
 # потоком опроса (process_reset_alerts) и потоком GUI (AlertApi).
