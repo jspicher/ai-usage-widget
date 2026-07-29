@@ -23,7 +23,11 @@
   .row .btn{margin-top:9px; width:100%; padding:6px 0; font-size:11px; cursor:pointer;
             background:#26262c; color:#ececf1; border:1px solid #33333a; border-radius:6px}
   .row .btn:hover{background:#2f2f36}
-  .empty{opacity:.5; text-align:center; padding:18px 0}
+  .empty{text-align:center; padding:18px 0}
+  .empty .empty-text{opacity:.5; margin-bottom:12px}
+  .empty .btn{width:auto; padding:6px 24px; font-size:11px; cursor:pointer;
+              background:#26262c; color:#ececf1; border:1px solid #33333a; border-radius:6px}
+  .empty .btn:hover{background:#2f2f36}
 </style>
 </head>
 <body>
@@ -51,7 +55,18 @@ async function renderAlerts(){
   const alerts = await window.pywebview.api.get_alerts();
   const rows = document.getElementById("rows");
   document.getElementById("all").style.display = alerts.length > 1 ? "inline" : "none";
-  if(!alerts.length){ rows.innerHTML = '<div class="empty">No alerts</div>'; return; }
+  if(!alerts.length){
+    // Always a working close path -- even if this window was ever created
+    // with nothing pending (a race the Python side also guards against),
+    // the user is never stuck with an unclosable always-on-top window.
+    rows.innerHTML = '<div class="empty"><div class="empty-text">No alerts</div>' +
+      '<button class="btn" id="closeEmpty">Close</button></div>';
+    document.getElementById("closeEmpty").addEventListener("click", async () => {
+      await window.pywebview.api.dismiss_all();
+      renderAlerts();
+    });
+    return;
+  }
   rows.innerHTML = alerts.map(a => `
     <div class="row">
       <div class="who">${esc(NAMES[a.provider] || a.provider)}</div>

@@ -756,6 +756,15 @@ class AlertWindowManager:
             return None, None
 
     def raise_alert(self):
+        # Снимок под ALERTS_LOCK, отпущенным ДО self.lock -- так пара локов
+        # никогда не вкладывается. Если в зазоре между тем, как
+        # process_reset_alerts() увидел непустой pending, и этим вызовом
+        # GUI-поток успел dismiss_all(), здесь мы это увидим и не создадим
+        # окно без единого оповещения и без кнопки закрытия.
+        with ALERTS_LOCK:
+            pending_count = len(ALERTS.pending)
+        if pending_count == 0:
+            return
         with self.lock:
             if self.window is not None:
                 try:
@@ -764,7 +773,7 @@ class AlertWindowManager:
                     return
                 except Exception:
                     self.window = None
-            height = min(460, 90 + 130 * max(1, len(ALERTS.pending)))
+            height = min(460, 90 + 130 * max(1, pending_count))
             x, y = self._corner(height)
             try:
                 self.window = webview.create_window(
@@ -1124,8 +1133,6 @@ def main():
         print("Не установлен pywebview. Выполни:  pip install pywebview")
         sys.exit(1)
 
-    threading.Thread(target=refresh_loop, daemon=True).start()
-
     w = CFG["window"]
     window = webview.create_window(
         "AI Usage",
@@ -1157,6 +1164,12 @@ def main():
             pass
     if TRAY_AVAILABLE:
         TRAY.start(window)
+    # Поток опроса запускается только ТЕПЕРЬ, после того как главное окно уже
+    # создано -- иначе первый же process_reset_alerts() мог вызвать
+    # raise_alert() раньше main-окна, и тогда webview.windows[0] оказался бы
+    # окном оповещений, а не главным (JsApi.close/minimize_to_tray/toggle_on_top
+    # все полагаются на windows[0] == главное окно).
+    threading.Thread(target=refresh_loop, daemon=True).start()
     webview.start(debug=False)
     STATE.shutdown_event.set()
     if TRAY.icon_claude:
