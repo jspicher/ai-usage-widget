@@ -87,19 +87,21 @@ Requirements:
 - Python 3.10+
 - WebView2 Runtime
 
-Install dependencies:
+Create the project virtual environment and install the pinned dependencies:
 
-```bash
-pip install pywebview pystray Pillow
+```powershell
+install.bat
 ```
 
-Run the widget:
+`install.bat` creates `.venv` and installs the exact versions in
+`requirements.txt`. Run the widget with:
 
-```bash
-python widget.py
+```powershell
+.\.venv\Scripts\python.exe widget.py
 ```
 
 Or double-click `start_widget.vbs` to launch without a console window.
+The launcher shows a clear message if `install.bat` has not been run yet.
 
 ### Build your own executable
 
@@ -158,6 +160,9 @@ The Settings screen supports:
 - Read-only connector status for each provider (connected / not configured, and where the credential came from)
 - Russian and English interface languages
 - A visible scrollbar on this page only, since it's the one screen with more content than fits at the default window size
+- Visible `config.json` load/write health. If the file is corrupt, automatic
+  geometry persistence leaves it untouched; an explicit Settings save first
+  backs it up as `config.json.corrupt-<timestamp>.bak`.
 
 Example `config.json`:
 
@@ -236,9 +241,11 @@ No. This is an independent open-source project and is not an official Anthropic,
 
 ### Dependencies
 
-- `pywebview` -- WebView2-based window
-- `pystray` -- Windows system tray integration
-- `Pillow` -- tray icon generation
+- `pywebview==6.2.1` -- WebView2-based window
+- `pystray==0.19.5` -- Windows system tray integration
+- `Pillow==12.3.0` -- tray icon generation
+
+The pinned set lives in `requirements.txt` and is installed into `.venv`.
 
 ### Project structure
 
@@ -248,6 +255,7 @@ usage-widget/
 ├── resetwatch.py
 ├── ui.html
 ├── alert.html
+├── requirements.txt
 ├── config.json
 ├── icon/
 ├── preview/
@@ -263,7 +271,8 @@ usage-widget/
 python -m unittest discover -s tests -t . -v
 ```
 
-Runs 34 tests covering weekly reset detection, the clock-jump guarantee described above, derived-timestamp handling, and alert-state persistence including write-failure paths.
+Runs the reset-detection suite plus widget regression coverage for configuration
+recovery, credential parsing, timestamps, polling, redaction, and CLI launching.
 
 ### Build a Windows executable
 

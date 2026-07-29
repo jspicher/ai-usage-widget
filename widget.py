@@ -1,22 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-AI Usage Widget — remaining-quota widget for Claude Code, Codex CLI, and OpenCode.
+AI Usage Widget — remaining-quota widget for Claude Code, Codex CLI, and OpenRouter.
 
 Reads each CLI's local authentication files and queries its usage endpoints:
   * Claude Code : ~/.claude/.credentials.json  -> api.anthropic.com/api/oauth/usage
   * Codex CLI   : ~/.codex/auth.json           -> chatgpt.com/backend-api/wham/usage
-  * OpenCode    : ~/.local/share/opencode/auth.json -> opencode.ai (best effort)
+  * OpenRouter  : OPENROUTER_API_KEY            -> openrouter.ai/api/v1/credits
 
 Run:          python widget.py
-Dependencies: pip install pywebview
+Dependencies: pip install -r requirements.txt
 """
 
 import base64
 import copy
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -55,6 +57,7 @@ else:
     DATA_DIR = APP_DIR
 HOME = os.path.expanduser("~")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
+ERROR_LOG_PATH = os.path.join(DATA_DIR, "widget-error.log")
 
 DEFAULT_CONFIG = {
     "refresh_interval_sec": 300,
@@ -65,49 +68,222 @@ DEFAULT_CONFIG = {
     },
     "window": {"x": None, "y": None, "width": 380, "height": 400, "on_top": True},
     "language": "en",
-    "opencode": {
-        # If OpenCode gets a known official usage endpoint, enter it here.
-        "usage_endpoint": "",
-        # Candidate endpoints that the widget will try automatically:
-        "endpoint_candidates": [
-            "https://opencode.ai/api/usage",
-            "https://opencode.ai/zen/v1/usage",
-            "https://opencode.ai/zen/go/v1/usage",
-            "https://api.opencode.ai/v1/usage",
-        ],
-        # Manual mode: if the API is unavailable, enter plan limits (in USD)
-        # and the widget will calculate usage from local OpenCode stats, if found.
-        "manual_limits": {"session_usd": None, "week_usd": None, "month_usd": None},
-    },
+    "openrouter": {"api_key": ""},
 }
+
+CONFIG_HEALTH = {
+    "status": "ok",
+    "error": None,
+    "recovery_required": False,
+    "backup_path": None,
+}
+_CONFIG_LOCK = threading.Lock()
 
 
 # ----------------------------------------------------------------------------
 # helpers
 # ----------------------------------------------------------------------------
 
-def load_config():
-    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+
+def error_info(code, params=None, detail=None):
+    """Build a stable, localizable error payload for the JavaScript bridge."""
+    result = {"code": code}
+    if params:
+        result["params"] = params
+    if detail:
+        result["detail"] = str(detail)
+    return result
+
+
+def _log_failure(operation, exc):
+    """Append a diagnostic to the widget log without raising."""
     try:
-        if os.path.exists(CONFIG_PATH):
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                user = json.load(f)
-            for k, v in user.items():
-                if isinstance(v, dict) and isinstance(cfg.get(k), dict):
-                    cfg[k].update(v)
-                else:
-                    cfg[k] = v
+        line = "%s %s failed: %s: %s\n" % (
+            time.strftime("%Y-%m-%d %H:%M:%S"),
+            operation,
+            type(exc).__name__,
+            exc,
+        )
+        with open(ERROR_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line)
     except Exception:
         pass
+
+
+def _number(value, default, minimum=None, maximum=None, integer=False):
+    """Return a finite, optionally clamped number, or the documented default."""
+    if isinstance(value, bool):
+        return default
+    try:
+        result = float(value)
+        if result != result or result in (float("inf"), float("-inf")):
+            raise ValueError("not finite")
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if minimum is not None:
+        result = max(minimum, result)
+    if maximum is not None:
+        result = min(maximum, result)
+    return int(result) if integer else result
+
+
+def normalize_config(value):
+    """Merge and validate supported configuration values."""
+    source = value if isinstance(value, dict) else {}
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["language"] = source.get("language") if source.get("language") in ("en", "ru") else "en"
+    cfg["refresh_interval_sec"] = _number(
+        source.get("refresh_interval_sec"),
+        DEFAULT_CONFIG["refresh_interval_sec"],
+        15,
+        600,
+        integer=True,
+    )
+
+    source_window = source.get("window") if isinstance(source.get("window"), dict) else {}
+    cfg["window"]["width"] = _number(
+        source_window.get("width"), 380, 200, 800, integer=True)
+    cfg["window"]["height"] = _number(
+        source_window.get("height"), 400, 300, 1200, integer=True)
+    for key in ("x", "y"):
+        raw = source_window.get(key)
+        cfg["window"][key] = None if raw is None else _number(raw, None, integer=True)
+    cfg["window"]["on_top"] = (
+        source_window.get("on_top")
+        if isinstance(source_window.get("on_top"), bool)
+        else DEFAULT_CONFIG["window"]["on_top"]
+    )
+
+    source_alert = (
+        source.get("reset_alert") if isinstance(source.get("reset_alert"), dict) else {})
+    cfg["reset_alert"]["enabled"] = (
+        source_alert.get("enabled")
+        if isinstance(source_alert.get("enabled"), bool)
+        else DEFAULT_CONFIG["reset_alert"]["enabled"]
+    )
+    cfg["reset_alert"]["pct_jump_threshold"] = _number(
+        source_alert.get("pct_jump_threshold"),
+        DEFAULT_CONFIG["reset_alert"]["pct_jump_threshold"],
+        0,
+        100,
+    )
+    cfg["reset_alert"]["resets_at_advance_sec"] = _number(
+        source_alert.get("resets_at_advance_sec"),
+        DEFAULT_CONFIG["reset_alert"]["resets_at_advance_sec"],
+        1,
+        604800,
+    )
+
+    source_openrouter = (
+        source.get("openrouter") if isinstance(source.get("openrouter"), dict) else {})
+    api_key = source_openrouter.get("api_key")
+    cfg["openrouter"]["api_key"] = api_key if isinstance(api_key, str) else ""
     return cfg
 
 
-def save_config(cfg):
+def load_config():
+    """Load config safely, retaining a corrupt file for explicit recovery."""
+    global CONFIG_HEALTH
+    if not os.path.exists(CONFIG_PATH):
+        CONFIG_HEALTH = {
+            "status": "missing",
+            "error": None,
+            "recovery_required": False,
+            "backup_path": None,
+        }
+        return copy.deepcopy(DEFAULT_CONFIG)
     try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            user = json.load(f)
+        if not isinstance(user, dict):
+            raise ValueError("configuration root must be an object")
+    except Exception as exc:
+        _log_failure("config load", exc)
+        CONFIG_HEALTH = {
+            "status": "corrupt",
+            "error": error_info("config_corrupt", detail=exc),
+            "recovery_required": True,
+            "backup_path": None,
+        }
+        return copy.deepcopy(DEFAULT_CONFIG)
+    CONFIG_HEALTH = {
+        "status": "ok",
+        "error": None,
+        "recovery_required": False,
+        "backup_path": None,
+    }
+    return normalize_config(user)
+
+
+def _backup_corrupt_config():
+    """Copy the recoverable corrupt file before an explicit Settings save."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    backup_path = "%s.corrupt-%s.bak" % (CONFIG_PATH, stamp)
+    try:
+        shutil.copy2(CONFIG_PATH, backup_path)
+    except Exception as exc:
+        _log_failure("config recovery backup", exc)
+        return None, exc
+    return backup_path, None
+
+
+def save_config(cfg, allow_recovery=False):
+    """Atomically persist config and return True only after replacement succeeds."""
+    global CONFIG_HEALTH
+    payload = normalize_config(cfg)
+    with _CONFIG_LOCK:
+        recovering = CONFIG_HEALTH.get("recovery_required", False)
+        if recovering and not allow_recovery:
+            exc = RuntimeError("corrupt configuration requires explicit recovery")
+            _log_failure("config write blocked", exc)
+            return False
+
+        backup_path = None
+        if recovering and os.path.exists(CONFIG_PATH):
+            backup_path, backup_error = _backup_corrupt_config()
+            if backup_error:
+                CONFIG_HEALTH = {
+                    "status": "backup_failed",
+                    "error": error_info("config_backup_failed", detail=backup_error),
+                    "recovery_required": True,
+                    "backup_path": None,
+                }
+                return False
+
+        folder = os.path.dirname(os.path.abspath(CONFIG_PATH)) or "."
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(
+                dir=folder, prefix=".config-", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, CONFIG_PATH)
+            tmp = None
+        except Exception as exc:
+            _log_failure("config write", exc)
+            CONFIG_HEALTH = {
+                "status": "write_failed",
+                "error": error_info("config_write_failed", detail=exc),
+                "recovery_required": recovering,
+                "backup_path": backup_path,
+            }
+            return False
+        finally:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+        CONFIG_HEALTH = {
+            "status": "recovered" if recovering else "ok",
+            "error": None,
+            "recovery_required": False,
+            "backup_path": backup_path,
+        }
+        return True
 
 
 def http_get_json(url, headers=None, timeout=15):
@@ -122,24 +298,24 @@ def iso_to_epoch(value):
     if value is None:
         return None
     if isinstance(value, (int, float)):
-        # Already an epoch value, in seconds or milliseconds.
-        return value / 1000.0 if value > 4e10 else float(value)
-    if isinstance(value, str):
+        epoch = float(value)
+    elif isinstance(value, str):
         s = value.strip()
         try:
-            return float(s)
+            epoch = float(s)
         except ValueError:
-            pass
-        try:
-            if s.endswith("Z"):
-                s = s[:-1] + "+00:00"
-            dt = datetime.fromisoformat(s)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.timestamp()
-        except Exception:
-            return None
-    return None
+            try:
+                if s.endswith("Z"):
+                    s = s[:-1] + "+00:00"
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                epoch = dt.timestamp()
+            except Exception:
+                return None
+    else:
+        return None
+    return epoch / 1000.0 if epoch > 4e10 else epoch
 
 
 def pick(d, *keys):
@@ -195,31 +371,54 @@ CLAUDE_USAGE_URLS = [
 ]
 
 
+def read_claude_credentials(paths=None):
+    """Try every Claude credential candidate until one has a usable token."""
+    read_errors = []
+    found_file = False
+    for path in paths or CLAUDE_CRED_PATHS:
+        if not os.path.exists(path):
+            continue
+        found_file = True
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            oauth = data.get("claudeAiOauth") or data.get("oauth") or {}
+            token = oauth.get("accessToken") or oauth.get("access_token")
+            if not token:
+                continue
+            return {
+                "token": token,
+                "subscription": oauth.get("subscriptionType"),
+                "expires_at": iso_to_epoch(
+                    oauth.get("expiresAt") or oauth.get("expires_at")),
+                "source": path,
+            }, None
+        except Exception as exc:
+            read_errors.append((path, exc))
+    if read_errors:
+        path, exc = read_errors[-1]
+        return None, error_info(
+            "claude_credentials_read_failed",
+            params={"path": path},
+            detail=exc,
+        )
+    if found_file:
+        return None, error_info("claude_token_missing")
+    return None, error_info("claude_credentials_missing")
+
+
 def fetch_claude():
     result = {"id": "claude", "name": "Claude Code", "kind": "windows", "ok": False,
               "windows": [], "meta": {}, "error": None}
-    token = None
-    cred_file = None
-    for p in CLAUDE_CRED_PATHS:
-        if os.path.exists(p):
-            cred_file = p
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                oauth = data.get("claudeAiOauth") or data.get("oauth") or {}
-                token = oauth.get("accessToken") or oauth.get("access_token")
-                result["meta"]["subscription"] = oauth.get("subscriptionType")
-                exp = oauth.get("expiresAt")
-                if exp and iso_to_epoch(exp) and iso_to_epoch(exp) < time.time():
-                    result["meta"]["token_stale"] = True
-            except Exception as e:
-                result["error"] = f"Не удалось прочитать {p}: {e}"
-            break
-    if not token:
-        result["error"] = result["error"] or (
-            "Не найден токен Claude Code (~/.claude/.credentials.json). "
-            "Открой Claude Code и выполни /login.")
+    credentials, credential_error = read_claude_credentials()
+    if not credentials:
+        result["error"] = credential_error
         return result
+    token = credentials["token"]
+    result["meta"]["subscription"] = credentials.get("subscription")
+    result["meta"]["token_expires_at"] = credentials.get("expires_at")
+    if credentials.get("expires_at") and credentials["expires_at"] < time.time():
+        result["meta"]["token_stale"] = True
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -234,21 +433,29 @@ def fetch_claude():
             data = http_get_json(url, headers)
             break
         except urllib.error.HTTPError as e:
-            last_err = f"HTTP {e.code} от {url}"
             if e.code in (401, 403):
-                last_err += " — токен истёк, зайди в Claude Code (/login)"
+                last_err = error_info(
+                    "claude_auth_expired", params={"status": e.code})
+            else:
+                last_err = error_info(
+                    "api_http_error",
+                    params={"service": "Claude", "status": e.code},
+                    detail=url,
+                )
         except Exception as e:
-            last_err = f"{type(e).__name__}: {e}"
+            last_err = error_info(
+                "api_request_failed", params={"service": "Claude"}, detail=e)
     if data is None:
-        result["error"] = last_err or "Нет ответа от API"
+        result["error"] = last_err or error_info(
+            "api_no_response", params={"service": "Claude"})
         return result
 
     label_map = {
-        "five_hour": ("session", "Сессия (5 ч)"),
-        "seven_day": ("week", "Неделя"),
-        "seven_day_sonnet": ("week_sonnet", "Неделя · Sonnet"),
-        "seven_day_opus": ("week_opus", "Неделя · Opus"),
-        "seven_day_oauth_apps": ("week_apps", "Неделя · приложения"),
+        "five_hour": ("session", "session"),
+        "seven_day": ("week", "week"),
+        "seven_day_sonnet": ("week_sonnet", "weekSonnet"),
+        "seven_day_opus": ("week_opus", "weekOpus"),
+        "seven_day_oauth_apps": ("week_apps", "weekApps"),
     }
     for key, (wid, label) in label_map.items():
         obj = data.get(key)
@@ -267,7 +474,8 @@ def fetch_claude():
     if result["windows"]:
         result["ok"] = True
     else:
-        result["error"] = "API ответил, но формат не распознан"
+        result["error"] = error_info(
+            "api_format_unrecognized", params={"service": "Claude"})
         result["meta"]["raw_keys"] = list(data.keys())[:12]
     return result
 
@@ -289,39 +497,56 @@ def _jwt_claims(jwt):
         return {}
 
 
-def fetch_codex():
-    result = {"id": "codex", "name": "Codex CLI", "kind": "windows", "ok": False,
-              "windows": [], "meta": {}, "error": None}
-    auth_path = os.path.join(_codex_home(), "auth.json")
-    if not os.path.exists(auth_path):
-        result["error"] = ("Не найден ~/.codex/auth.json. "
-                           "Выполни `codex login` в терминале.")
-        return result
+def read_codex_credentials(auth_path=None):
+    """Read Codex auth once and return tokens plus secret-free metadata."""
+    path = auth_path or os.path.join(_codex_home(), "auth.json")
+    if not os.path.exists(path):
+        return None, error_info("codex_credentials_missing")
     try:
-        with open(auth_path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             auth = json.load(f)
-    except Exception as e:
-        result["error"] = f"Не удалось прочитать auth.json: {e}"
-        return result
+    except Exception as exc:
+        return None, error_info("codex_credentials_read_failed", detail=exc)
 
     tokens = auth.get("tokens") or {}
     access = tokens.get("access_token") or auth.get("access_token")
-    account_id = tokens.get("account_id") or auth.get("account_id")
-    if not account_id:
-        for t in (tokens.get("id_token"), access):
-            if not t:
-                continue
-            claims = _jwt_claims(t)
-            oai = claims.get("https://api.openai.com/auth") or {}
-            account_id = oai.get("chatgpt_account_id") or oai.get("account_id")
-            if account_id:
-                plan = oai.get("chatgpt_plan_type")
-                if plan:
-                    result["meta"]["plan"] = plan
-                break
     if not access:
-        result["error"] = "В auth.json нет access_token. Выполни `codex login`."
+        return None, error_info("codex_token_missing")
+    account_id = tokens.get("account_id") or auth.get("account_id")
+    plan = None
+    if not account_id:
+        for token in (tokens.get("id_token"), access):
+            if not token:
+                continue
+            claims = _jwt_claims(token)
+            account = claims.get("https://api.openai.com/auth") or {}
+            account_id = (
+                account.get("chatgpt_account_id") or account.get("account_id"))
+            plan = account.get("chatgpt_plan_type") or plan
+            if account_id:
+                break
+    access_claims = _jwt_claims(access)
+    return {
+        "token": access,
+        "account_id": account_id,
+        "plan": plan,
+        "expires_at": iso_to_epoch(access_claims.get("exp")),
+        "source": path,
+    }, None
+
+
+def fetch_codex():
+    result = {"id": "codex", "name": "Codex CLI", "kind": "windows", "ok": False,
+              "windows": [], "meta": {}, "error": None}
+    credentials, credential_error = read_codex_credentials()
+    if not credentials:
+        result["error"] = credential_error
         return result
+    access = credentials["token"]
+    account_id = credentials.get("account_id")
+    if credentials.get("plan"):
+        result["meta"]["plan"] = credentials["plan"]
+    result["meta"]["token_expires_at"] = credentials.get("expires_at")
 
     headers = {
         "Authorization": f"Bearer {access}",
@@ -335,13 +560,17 @@ def fetch_codex():
     try:
         data = http_get_json("https://chatgpt.com/backend-api/wham/usage", headers)
     except urllib.error.HTTPError as e:
-        msg = f"HTTP {e.code}"
         if e.code in (401, 403):
-            msg += " — токен истёк. Запусти Codex (он обновит токен) или `codex login`."
-        result["error"] = msg
+            result["error"] = error_info(
+                "codex_auth_expired", params={"status": e.code})
+        else:
+            result["error"] = error_info(
+                "api_http_error",
+                params={"service": "Codex", "status": e.code})
         return result
     except Exception as e:
-        result["error"] = f"{type(e).__name__}: {e}"
+        result["error"] = error_info(
+            "api_request_failed", params={"service": "Codex"}, detail=e)
         return result
 
     if isinstance(data.get("plan_type"), str):
@@ -374,22 +603,22 @@ def fetch_codex():
         if mins:
             mins = float(mins)
             if mins <= 6 * 60:
-                label, wid = "Сессия (5 ч)", "session"
+                label, wid = "session", "session"
             elif mins >= 6.5 * 24 * 60:
-                label, wid = "Неделя", "week"
+                label, wid = "week", "week"
         if pct is not None or resets is not None:
             result["windows"].append(make_window(
                 wid, label, used_pct=pct, resets_at=resets,
                 extra={"resets_at_derived": True} if derived else None))
 
-    add_window(rl.get("primary_window") or rl.get("primary"), "session", "Сессия (5 ч)")
-    add_window(rl.get("secondary_window") or rl.get("secondary"), "week", "Неделя")
+    add_window(rl.get("primary_window") or rl.get("primary"), "session", "session")
+    add_window(rl.get("secondary_window") or rl.get("secondary"), "week", "week")
 
     # Additional model-specific limits (for example, Spark).
     for i, item in enumerate(data.get("additional_rate_limits") or []):
         if not isinstance(item, dict):
             continue
-        title = item.get("title") or item.get("id") or f"Доп. лимит {i+1}"
+        title = item.get("title") or item.get("id") or "Extra limit %d" % (i + 1)
         obj = item.get("window") or item.get("rate_limit") or item
         pct = pick(obj, "used_percent", "usage_percent")
         resets = iso_to_epoch(pick(obj, "resets_at"))
@@ -409,138 +638,9 @@ def fetch_codex():
     if result["windows"]:
         result["ok"] = True
     else:
-        result["error"] = "API ответил, но лимиты не найдены"
+        result["error"] = error_info(
+            "api_limits_missing", params={"service": "Codex"})
         result["meta"]["raw_keys"] = list(data.keys())[:12]
-    return result
-
-
-# ----------------------------------------------------------------------------
-# OpenCode (Zen / Go)
-# ----------------------------------------------------------------------------
-
-OPENCODE_AUTH_PATHS = [
-    os.path.join(HOME, ".local", "share", "opencode", "auth.json"),
-    os.path.join(os.environ.get("LOCALAPPDATA", ""), "opencode", "auth.json"),
-    os.path.join(os.environ.get("APPDATA", ""), "opencode", "auth.json"),
-    os.path.join(os.environ.get("XDG_DATA_HOME", ""), "opencode", "auth.json"),
-]
-
-
-def _opencode_key():
-    for p in OPENCODE_AUTH_PATHS:
-        if p and os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception:
-                continue
-            # Keys are stored by provider ID: "opencode", "opencode-go", "zen", etc.
-            for prov_id in ("opencode", "opencode-go", "opencode-zen", "zen"):
-                entry = data.get(prov_id)
-                if isinstance(entry, dict):
-                    key = entry.get("key") or entry.get("apiKey") or entry.get("api_key")
-                    if key:
-                        return key, prov_id
-            # Otherwise, use the first API key found.
-            for prov_id, entry in data.items():
-                if isinstance(entry, dict) and entry.get("type") in ("api", "apikey"):
-                    key = entry.get("key")
-                    if key:
-                        return key, prov_id
-    return None, None
-
-
-def _parse_opencode_payload(data, result):
-    """Flexibly parse rolling5h/weekly/monthly usage-response variants."""
-    alias = {
-        "session": ("session", "Сессия (5 ч)"),
-        "rolling5h": ("session", "Сессия (5 ч)"),
-        "five_hour": ("session", "Сессия (5 ч)"),
-        "fiveHour": ("session", "Сессия (5 ч)"),
-        "week": ("week", "Неделя"),
-        "weekly": ("week", "Неделя"),
-        "seven_day": ("week", "Неделя"),
-        "month": ("month", "Месяц"),
-        "monthly": ("month", "Месяц"),
-        "thirty_day": ("month", "Месяц"),
-    }
-    container = data
-    for k in ("usage", "limits", "windows", "data"):
-        if isinstance(data.get(k), dict):
-            container = data[k]
-            break
-    for key, obj in (container.items() if isinstance(container, dict) else []):
-        if key not in alias or not isinstance(obj, dict):
-            continue
-        wid, label = alias[key]
-        pct = pick(obj, "usagePercent", "usedPercent", "used_percent", "utilization", "percent")
-        used_usd = pick(obj, "usageDollars", "usedDollars", "usage_usd", "spent", "used")
-        limit_usd = pick(obj, "limitDollars", "limit_usd", "limit", "cap")
-        resets = iso_to_epoch(pick(obj, "resets_at", "resetAt", "resetsAt"))
-        derived = False
-        if resets is None:
-            secs = pick(obj, "resetInSec", "resets_in_seconds", "resetInSeconds")
-            if secs is not None:
-                resets = time.time() + float(secs)
-                derived = True
-        if pct is not None or (used_usd is not None and limit_usd):
-            result["windows"].append(make_window(
-                wid, label, used_pct=pct, resets_at=resets,
-                used_usd=used_usd, limit_usd=limit_usd,
-                extra={"resets_at_derived": True} if derived else None))
-    if isinstance(data.get("balance"), (int, float)):
-        result["meta"]["balance_usd"] = data["balance"]
-    plan = pick(data, "plan", "subscription", "tier")
-    if isinstance(plan, str):
-        result["meta"]["plan"] = plan
-
-
-def fetch_opencode(cfg):
-    result = {"id": "opencode", "name": "OpenCode", "ok": False,
-              "windows": [], "meta": {}, "error": None}
-    key, prov_id = _opencode_key()
-    if not key:
-        result["error"] = ("Не найден API-ключ OpenCode "
-                           "(~/.local/share/opencode/auth.json). "
-                           "В opencode выполни /connect → OpenCode Zen/Go.")
-        return result
-    result["meta"]["provider_id"] = prov_id
-
-    oc_cfg = cfg.get("opencode", {})
-    endpoints = []
-    if oc_cfg.get("usage_endpoint"):
-        endpoints.append(oc_cfg["usage_endpoint"])
-    endpoints += oc_cfg.get("endpoint_candidates", [])
-
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "Accept": "application/json",
-        "User-Agent": "ai-usage-widget/1.0",
-    }
-    last_err = None
-    for url in endpoints:
-        try:
-            data = http_get_json(url, headers, timeout=8)
-            if isinstance(data, dict):
-                _parse_opencode_payload(data, result)
-                if result["windows"]:
-                    result["ok"] = True
-                    result["meta"]["endpoint"] = url
-                    if oc_cfg.get("usage_endpoint") != url:
-                        cfg.setdefault("opencode", {})["usage_endpoint"] = url
-                        save_config(cfg)
-                    return result
-        except urllib.error.HTTPError as e:
-            last_err = f"HTTP {e.code} от {url}"
-        except Exception as e:
-            last_err = f"{type(e).__name__}: {e}"
-
-    result["error"] = (
-        "У OpenCode пока нет публичного usage-API. "
-        "Лимиты видны в консоли opencode.ai. Если появится эндпоинт — "
-        "впиши его в config.json → opencode.usage_endpoint."
-        + (f" (последняя ошибка: {last_err})" if last_err else ""))
-    result["meta"]["console_url"] = "https://opencode.ai"
     return result
 
 
@@ -565,7 +665,7 @@ def fetch_openrouter():
     key, source = _openrouter_key()
     result["meta"]["key_source"] = source
     if not key:
-        result["error"] = "Не задан OPENROUTER_API_KEY"
+        result["error"] = error_info("openrouter_key_missing")
         return result
 
     headers = {
@@ -576,20 +676,25 @@ def fetch_openrouter():
     try:
         data = http_get_json(OPENROUTER_CREDITS_URL, headers) or {}
     except urllib.error.HTTPError as e:
-        msg = "HTTP %s" % e.code
         if e.code in (401, 403):
-            msg += " -- ключ отклонён. Проверь OPENROUTER_API_KEY."
-        result["error"] = msg
+            result["error"] = error_info(
+                "openrouter_key_rejected", params={"status": e.code})
+        else:
+            result["error"] = error_info(
+                "api_http_error",
+                params={"service": "OpenRouter", "status": e.code})
         return result
     except Exception as e:
-        result["error"] = "%s: %s" % (type(e).__name__, e)
+        result["error"] = error_info(
+            "api_request_failed", params={"service": "OpenRouter"}, detail=e)
         return result
 
     credits = data.get("data") or {}
     total = pick(credits, "total_credits")
     used = pick(credits, "total_usage")
     if total is None or used is None:
-        result["error"] = "API ответил, но лимиты не найдены"
+        result["error"] = error_info(
+            "api_limits_missing", params={"service": "OpenRouter"})
         return result
 
     # API format changes may make total/used nonnumeric; do not crash the widget.
@@ -597,7 +702,8 @@ def fetch_openrouter():
         total = float(total)
         used = float(used)
     except (TypeError, ValueError):
-        result["error"] = "API ответил, но лимиты не найдены"
+        result["error"] = error_info(
+            "api_limits_missing", params={"service": "OpenRouter"})
         return result
 
     balance = {
@@ -631,7 +737,9 @@ class State:
         self.lock = threading.Lock()
         self.refresh_lock = threading.Lock()
         self.shutdown_event = threading.Event()
+        self.refresh_wake_event = threading.Event()
         self.snapshot = {"updated_at": None, "providers": {}}
+        self.main_window = None
 
 
 STATE = State()
@@ -664,22 +772,27 @@ _GEOMETRY_SAVED = False
 
 def persist_window_geometry(window):
     """Persist the main window's position and size; safe to call repeatedly."""
-    global _GEOMETRY_SAVED
+    global CFG, _GEOMETRY_SAVED
     with _GEOMETRY_LOCK:
         if _GEOMETRY_SAVED:
-            return
+            return True
+        try:
+            candidate = copy.deepcopy(CFG)
+            w = candidate["window"]
+            w["x"], w["y"] = window.x, window.y
+            # Only trust width/height if the startup chrome-shrink workaround
+            # confirmed success -- otherwise a failed resize would compound
+            # into a smaller window on every future launch.
+            if _INITIAL_SIZE_OK:
+                w["width"], w["height"] = window.width, window.height
+        except Exception as exc:
+            _log_failure("window geometry read", exc)
+            return False
+        if not save_config(candidate):
+            return False
+        CFG = normalize_config(candidate)
         _GEOMETRY_SAVED = True
-    try:
-        w = CFG["window"]
-        w["x"], w["y"] = window.x, window.y
-        # Only trust width/height if the startup chrome-shrink workaround
-        # confirmed success -- otherwise a failed resize would compound
-        # into a smaller window on every future launch (see _INITIAL_SIZE_OK).
-        if _INITIAL_SIZE_OK:
-            w["width"], w["height"] = window.width, window.height
-        save_config(CFG)
-    except Exception:
-        pass
+        return True
 
 
 def shutdown_app():
@@ -691,11 +804,19 @@ def shutdown_app():
     loop; it could then be terminated only through Task Manager.
     """
     STATE.shutdown_event.set()
+    STATE.refresh_wake_event.set()
+    win = STATE.main_window
     try:
-        win = webview.windows[0]
+        if win is None:
+            win = webview.windows[0]
         persist_window_geometry(win)
         win.destroy()
     except Exception:
+        # Retain enough state to make the emergency path graceful before the
+        # final hard-exit fallback.
+        if win is not None:
+            persist_window_geometry(win)
+        TRAY.stop()
         os._exit(0)
 
 
@@ -1027,7 +1148,9 @@ def refresh_all():
                 except Exception:
                     providers[name] = {"id": name, "name": name, "ok": False,
                                        "windows": [], "meta": {},
-                                       "error": "Внутренняя ошибка:\n" + traceback.format_exc(limit=2)}
+                                       "error": error_info(
+                                           "internal_error",
+                                           detail=traceback.format_exc(limit=2))}
         with STATE.lock:
             STATE.snapshot = {"updated_at": time.time(), "providers": providers}
         try:
@@ -1039,19 +1162,39 @@ def refresh_all():
         STATE.refresh_lock.release()
 
 
+def poll_delay(cfg=None):
+    """Return a guarded polling delay for loaded or hand-edited config."""
+    source = CFG if cfg is None else cfg
+    try:
+        value = source.get("refresh_interval_sec", 300)
+    except Exception:
+        value = 300
+    return _number(value, 300, 15, 600, integer=True)
+
+
 def refresh_loop():
     while not STATE.shutdown_event.is_set():
+        # Consume the wake that started this iteration before doing work. Any
+        # interval change that happens during refresh_all() then remains set
+        # and skips the old delay instead of being cleared accidentally.
+        STATE.refresh_wake_event.clear()
         try:
             refresh_all()
         except Exception:
             pass
-        STATE.shutdown_event.wait(timeout=max(15, int(CFG.get("refresh_interval_sec", 300))))
+        try:
+            delay = poll_delay()
+        except Exception:
+            delay = DEFAULT_CONFIG["refresh_interval_sec"]
+        if STATE.shutdown_event.is_set():
+            break
+        STATE.refresh_wake_event.wait(timeout=delay)
 
 
 REDACTED = "***"
 
 
-def config_for_ui():
+def config_for_ui(cfg=None):
     """Return the secret-free config subset sent to the WebView.
 
     A user may put the OpenRouter key in config.json. Without this cleanup, it
@@ -1059,11 +1202,97 @@ def config_for_ui():
     five seconds). The page does not need it; settings neither read nor display
     the key.
     """
-    cfg = copy.deepcopy(CFG)
-    section = cfg.get("openrouter")
+    safe = copy.deepcopy(CFG if cfg is None else cfg)
+    section = safe.get("openrouter")
     if isinstance(section, dict) and section.get("api_key"):
         section["api_key"] = REDACTED
-    return cfg
+    return safe
+
+
+def config_health_for_ui():
+    """Return config persistence health without exposing local file contents."""
+    health = copy.deepcopy(CONFIG_HEALTH)
+    if health.get("backup_path"):
+        health["backup_path"] = os.path.basename(health["backup_path"])
+    return health
+
+
+def token_status_from_snapshot(providers, current_time=None):
+    """Derive display status from cached, secret-free expiry metadata."""
+    now_value = time.time() if current_time is None else current_time
+    result = {"claude": None, "codex": None}
+    for provider_id in result:
+        provider = (providers or {}).get(provider_id) or {}
+        expiry = ((provider.get("meta") or {}).get("token_expires_at"))
+        expiry = iso_to_epoch(expiry)
+        if expiry is None:
+            continue
+        remaining = expiry - now_value
+        if remaining <= 0:
+            result[provider_id] = {"status": "expired", "remaining": 0}
+        elif remaining < 3600:
+            result[provider_id] = {
+                "status": "expiring", "remaining": remaining}
+        else:
+            result[provider_id] = {"status": "valid", "remaining": remaining}
+    return result
+
+
+def resolve_cli_command(name, arguments):
+    """Resolve a CLI and route Windows command wrappers through COMSPEC."""
+    executable = shutil.which(name)
+    if not executable:
+        return None, error_info("cli_not_found", params={"cli": name})
+    suffix = os.path.splitext(executable)[1].lower()
+    if suffix in (".cmd", ".bat"):
+        command_shell = os.environ.get("COMSPEC") or shutil.which("cmd.exe")
+        if not command_shell:
+            return None, error_info("cli_shell_missing")
+        return [
+            command_shell, "/d", "/s", "/c", executable, *arguments
+        ], None
+    return [executable, *arguments], None
+
+
+def launch_cli_login(name, arguments):
+    """Launch a CLI login and detect commands that fail immediately."""
+    command, resolve_error = resolve_cli_command(name, arguments)
+    if not command:
+        return {"success": False, "error": resolve_error}
+    try:
+        proc = subprocess.Popen(
+            command,
+            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+        )
+        try:
+            exit_code = proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            return {"success": True, "value": "login_started"}
+        if exit_code != 0:
+            return {
+                "success": False,
+                "error": error_info(
+                    "cli_early_exit",
+                    params={"cli": name, "exit_code": exit_code},
+                ),
+                "exit_code": exit_code,
+            }
+        return {
+            "success": True,
+            "value": "login_completed",
+            "exit_code": exit_code,
+        }
+    except FileNotFoundError:
+        return {
+            "success": False,
+            "error": error_info("cli_not_found", params={"cli": name}),
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": error_info(
+                "cli_launch_failed", params={"cli": name}, detail=exc),
+        }
 
 
 class JsApi:
@@ -1072,71 +1301,17 @@ class JsApi:
             snap = copy.deepcopy(STATE.snapshot)
         snap["now"] = time.time()
         snap["refresh_interval_sec"] = CFG.get("refresh_interval_sec", 300)
-        snap["token_status"] = self.get_token_status()
+        snap["token_status"] = token_status_from_snapshot(
+            snap.get("providers"), snap["now"])
         try:
             snap["on_top"] = CFG["window"].get("on_top", True)
         except Exception:
             snap["on_top"] = True
         snap["_config"] = config_for_ui()
+        snap["config_health"] = config_health_for_ui()
         with ALERTS_LOCK:
             snap["state_write_failed"] = not ALERTS.last_save_ok
         return snap
-
-    def get_token_status(self):
-        """Check Claude and Codex token status."""
-        result = {"claude": None, "codex": None}
-        
-        # Claude
-        cred_paths = [
-            os.path.join(HOME, ".claude", ".credentials.json"),
-            os.path.join(HOME, ".config", "claude", ".credentials.json"),
-        ]
-        for p in cred_paths:
-            if os.path.exists(p):
-                try:
-                    with open(p, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    oauth = data.get("claudeAiOauth") or data.get("oauth") or {}
-                    exp = oauth.get("expiresAt")
-                    if exp:
-                        exp_epoch = iso_to_epoch(exp)
-                        if exp_epoch:
-                            now = time.time()
-                            remaining = exp_epoch - now
-                            if remaining <= 0:
-                                result["claude"] = {"status": "expired", "remaining": 0}
-                            elif remaining < 3600:
-                                result["claude"] = {"status": "expiring", "remaining": remaining}
-                            else:
-                                result["claude"] = {"status": "valid", "remaining": remaining}
-                except Exception:
-                    pass
-                break
-        
-        # Codex
-        auth_path = os.path.join(_codex_home(), "auth.json")
-        if os.path.exists(auth_path):
-            try:
-                with open(auth_path, "r", encoding="utf-8") as f:
-                    auth = json.load(f)
-                tokens = auth.get("tokens") or {}
-                access = tokens.get("access_token") or auth.get("access_token")
-                if access:
-                    claims = _jwt_claims(access)
-                    exp = claims.get("exp")
-                    if exp:
-                        now = time.time()
-                        remaining = exp - now
-                        if remaining <= 0:
-                            result["codex"] = {"status": "expired", "remaining": 0}
-                        elif remaining < 3600:
-                            result["codex"] = {"status": "expiring", "remaining": remaining}
-                        else:
-                            result["codex"] = {"status": "valid", "remaining": remaining}
-            except Exception:
-                pass
-        
-        return result
 
     def refresh_now(self):
         if STATE.refresh_lock.locked():
@@ -1145,139 +1320,90 @@ class JsApi:
         return True
 
     def login_claude(self):
-        """Run ``claude auth login`` in the background."""
-        try:
-            proc = subprocess.Popen(
-                ["claude", "auth", "login"],
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
-                encoding='utf-8',
-                errors='replace'
-            )
-            return {"success": True, "output": "Авторизация запущена"}
-        except FileNotFoundError:
-            return {"success": False, "output": "Claude CLI не найден"}
-        except Exception as e:
-            return {"success": False, "output": f"Ошибка: {str(e)}"}
+        return launch_cli_login("claude", ["auth", "login"])
 
     def login_codex(self):
-        """Run ``codex login`` in the background."""
-        try:
-            proc = subprocess.Popen(
-                ["codex", "login"],
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
-                encoding='utf-8',
-                errors='replace'
-            )
-            return {"success": True, "output": "Авторизация запущена"}
-        except FileNotFoundError:
-            return {"success": False, "output": "Codex CLI не найден"}
-        except Exception as e:
-            return {"success": False, "output": f"Ошибка: {str(e)}"}
-    
-    def get_token_status(self):
-        """Check Claude and Codex token status."""
-        result = {"claude": None, "codex": None}
-        
-        # Claude
-        cred_paths = [
-            os.path.join(HOME, ".claude", ".credentials.json"),
-            os.path.join(HOME, ".config", "claude", ".credentials.json"),
-        ]
-        for p in cred_paths:
-            if os.path.exists(p):
-                try:
-                    with open(p, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    oauth = data.get("claudeAiOauth") or data.get("oauth") or {}
-                    exp = oauth.get("expiresAt")
-                    if exp:
-                        exp_epoch = iso_to_epoch(exp)
-                        if exp_epoch:
-                            now = time.time()
-                            remaining = exp_epoch - now
-                            if remaining <= 0:
-                                result["claude"] = {"status": "expired", "remaining": 0}
-                            elif remaining < 3600:
-                                result["claude"] = {"status": "expiring", "remaining": remaining}
-                            else:
-                                result["claude"] = {"status": "valid", "remaining": remaining}
-                except Exception:
-                    pass
-                break
-        
-        # Codex
-        auth_path = os.path.join(_codex_home(), "auth.json")
-        if os.path.exists(auth_path):
-            try:
-                with open(auth_path, "r", encoding="utf-8") as f:
-                    auth = json.load(f)
-                tokens = auth.get("tokens") or {}
-                access = tokens.get("access_token") or auth.get("access_token")
-                if access:
-                    claims = _jwt_claims(access)
-                    exp = claims.get("exp")
-                    if exp:
-                        now = time.time()
-                        remaining = exp - now
-                        if remaining <= 0:
-                            result["codex"] = {"status": "expired", "remaining": 0}
-                        elif remaining < 3600:
-                            result["codex"] = {"status": "expiring", "remaining": remaining}
-                        else:
-                            result["codex"] = {"status": "valid", "remaining": remaining}
-            except Exception:
-                pass
-        
-        return result
+        return launch_cli_login("codex", ["login"])
 
     def toggle_on_top(self):
+        global CFG
         new_val = not CFG["window"].get("on_top", True)
-        def _do():
-            try:
-                win = webview.windows[0]
-                win.on_top = new_val
-                CFG["window"]["on_top"] = new_val
-                save_config(CFG)
-            except Exception:
-                pass
-        threading.Thread(target=_do, daemon=True).start()
-        return new_val
+        candidate = copy.deepcopy(CFG)
+        candidate["window"]["on_top"] = new_val
+        if not save_config(candidate):
+            return {
+                "ok": False,
+                "value": CFG["window"].get("on_top", True),
+                "error": CONFIG_HEALTH.get("error") or error_info(
+                    "config_write_failed"),
+            }
+        CFG = normalize_config(candidate)
+        try:
+            win = STATE.main_window or webview.windows[0]
+            win.on_top = new_val
+        except Exception as exc:
+            return {
+                "ok": False,
+                "value": new_val,
+                "error": error_info("window_update_failed", detail=exc),
+            }
+        return {"ok": True, "value": new_val}
 
     def get_config(self):
         return config_for_ui()
 
     def save_config_api(self, cfg):
         global CFG
+        if not isinstance(cfg, dict):
+            return {"ok": False, "error": error_info("config_invalid")}
         try:
             old_lang = CFG.get("language", "en")
+            update = copy.deepcopy(cfg)
             # Settings do not edit the OpenRouter key. If a redacted value ever
             # comes back (see config_for_ui), writing that placeholder to
             # config.json would erase the real key.
-            section = cfg.get("openrouter")
+            section = update.get("openrouter")
             if isinstance(section, dict) and section.get("api_key") == REDACTED:
                 section = dict(section)
                 section.pop("api_key", None)
-                cfg = dict(cfg, openrouter=section)
-            for k, v in cfg.items():
-                if isinstance(v, dict) and isinstance(CFG.get(k), dict):
-                    CFG[k].update(v)
+                update["openrouter"] = section
+            candidate = copy.deepcopy(CFG)
+            for key, value in update.items():
+                if isinstance(value, dict) and isinstance(candidate.get(key), dict):
+                    candidate[key].update(value)
                 else:
-                    CFG[k] = v
-            save_config(CFG)
+                    candidate[key] = value
+            candidate = normalize_config(candidate)
+            if not save_config(candidate, allow_recovery=True):
+                return {
+                    "ok": False,
+                    "error": CONFIG_HEALTH.get("error") or error_info(
+                        "config_write_failed"),
+                }
+            CFG = candidate
+            STATE.refresh_wake_event.set()
             # Apply window settings.
             try:
-                win = webview.windows[0]
+                win = STATE.main_window or webview.windows[0]
                 w = CFG["window"]
                 win.on_top = w.get("on_top", True)
                 win.resize(w.get("width", 380), w.get("height", 400))
-            except Exception:
-                pass
+            except Exception as exc:
+                _log_failure("window settings apply", exc)
             # Update the tray when the language changes.
             if CFG.get("language", "en") != old_lang:
                 TRAY.update_tooltip()
-            return True
-        except Exception as e:
-            return str(e)
+            return {
+                "ok": True,
+                "config": config_for_ui(CFG),
+                "config_health": config_health_for_ui(),
+            }
+        except Exception as exc:
+            _log_failure("config API save", exc)
+            return {
+                "ok": False,
+                "error": error_info("config_write_failed", detail=exc),
+            }
 
     def close(self):
         shutdown_app()
@@ -1302,7 +1428,7 @@ def main():
     try:
         import webview  # pywebview
     except ImportError:
-        print("Не установлен pywebview. Выполни:  pip install pywebview")
+        print("pywebview is not installed. Run install.bat first.")
         sys.exit(1)
 
     w = CFG["window"]
@@ -1320,6 +1446,7 @@ def main():
         resizable=True,
         background_color="#101012",
     )
+    STATE.main_window = window
     # pywebview 6.2.1 winforms backend bug: create_window() sets the Form's
     # outer Size *before* switching FormBorderStyle to None for frameless
     # windows. .NET preserves ClientSize across that border-style change, so
@@ -1363,6 +1490,7 @@ def main():
     threading.Thread(target=refresh_loop, daemon=True).start()
     webview.start(debug=False)
     STATE.shutdown_event.set()
+    STATE.refresh_wake_event.set()
     TRAY.stop()
     # If this was not an exit through X or the tray (for example, an external
     # close), geometry has not yet been saved, so save it here. Otherwise no-op.

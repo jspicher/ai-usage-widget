@@ -10,8 +10,6 @@
     --cl-bg:#F5F1E8; --cl-ink:#2A261E; --cl-dim:#8a8272; --cl-accent:#D97757; --cl-track:#e6ddcc;
     /* Codex / OpenAI */
     --cx-bg:#0B0B0C; --cx-ink:#F2F2F2; --cx-dim:#8E8E93; --cx-track:#232326; --cx-accent:#ffffff;
-    /* OpenCode */
-    --oc-bg:#070707; --oc-ink:#EDEDED; --oc-dim:#6f6f6f; --oc-accent:#fab283; --oc-track:#1c1c1c;
   }
   *{box-sizing:border-box; margin:0; padding:0; -webkit-user-select:none; user-select:none}
   html,body{height:100%}
@@ -59,12 +57,17 @@
   nav button.active{color:#ececf1; border-top-color:#ececf1}
   nav button.n-claude.active{color:var(--cl-accent); border-top-color:var(--cl-accent)}
   nav button.n-codex.active{border-top-color:#fff; color:#fff}
-  nav button.n-opencode.active{color:var(--oc-accent); border-top-color:var(--oc-accent)}
+  nav button:focus-visible{outline:1px solid #5a5a64; outline-offset:-2px}
   nav button#nav-settings{flex:0 0 auto; padding:0 12px 0 10px; display:flex; align-items:center; justify-content:center; margin-left:auto}
   nav button#nav-settings svg{width:15px; height:15px; display:block}
 
   /* ---------- overview ---------- */
-  .strip{padding:14px 16px 16px; border-bottom:1px solid rgba(0,0,0,.25); cursor:pointer}
+  .strip{
+    display:block; width:100%; padding:14px 16px 16px; border:0;
+    border-bottom:1px solid rgba(0,0,0,.25); cursor:pointer;
+    color:inherit; font:inherit; text-align:left;
+  }
+  .strip:focus-visible{outline:2px solid #fff; outline-offset:-3px}
   .strip .top{display:flex; align-items:baseline; gap:8px}
   .strip .glyph{font-size:13px}
   .glyph svg{width:1em; height:1em; vertical-align:-.12em; display:inline-block}
@@ -98,17 +101,6 @@
   .th-openrouter .glyph{color:#8b7cf6}
   .th-openrouter .bar i{background:#8b7cf6}
 
-  /* OpenCode strip / page */
-  .th-opencode{background:var(--oc-bg); color:var(--oc-ink);
-    font-family:"Cascadia Code","JetBrains Mono",Consolas,monospace}
-  .th-opencode .name{font-size:12px}
-  .th-opencode .name::before{content:"▌"; color:var(--oc-accent); margin-right:4px}
-  .th-opencode .pct{font-weight:400; font-size:20px}
-  .th-opencode .sub{color:var(--oc-dim); font-size:10px}
-  .th-opencode .bar{background:transparent; height:auto; margin-top:8px}
-  .th-opencode .asciibar{font-size:11px; letter-spacing:1px; color:var(--oc-accent); white-space:nowrap}
-  .th-opencode .asciibar .off{color:#2c2c2c}
-
   .strip .err{font-size:10.5px; margin-top:6px; opacity:.75; line-height:1.4}
 
   /* ---------- detail pages ---------- */
@@ -132,8 +124,6 @@
   .win{margin-top:14px}
   .win .head{display:flex; align-items:baseline}
   .win .label{font-size:11px; letter-spacing:.1em; text-transform:uppercase; opacity:.65}
-  .th-opencode .win .label{text-transform:none; letter-spacing:0}
-  .th-opencode .win .label::before{content:"$ "}
   .win .bigpct{margin-left:auto; font-size:26px}
   .th-claude .win .bigpct{font-family:"Charter",Georgia,serif; color:var(--cl-ink)}
   .th-codex .win .bigpct{font-weight:200}
@@ -165,8 +155,6 @@
 
   .low i{background:#c8452c !important}
   .th-codex .low i{background:#ff5c47 !important}
-  .th-opencode .low{color:#ff5c47 !important}
-
   .empty{padding:28px 18px; text-align:center; opacity:.55; font-size:11px; line-height:1.6}
   
   /* ---------- settings ---------- */
@@ -178,11 +166,11 @@
   .settings .field-row{display:flex; gap:10px}
   .settings .field-row .field{flex:1; min-width:0; margin-bottom:12px}
   .settings label{display:block; font-size:11px; color:#8b8b93; margin-bottom:4px}
-  .settings input[type="number"], .settings input[type="text"]{
+  .settings input[type="number"], .settings input[type="text"], .settings select{
     width:100%; padding:8px 10px; background:#1a1a1e; border:1px solid #2a2a2e;
     border-radius:6px; color:#ececf1; font-size:12px; box-sizing:border-box;
   }
-  .settings input:focus{outline:none; border-color:#d97757}
+  .settings input:focus, .settings select:focus{outline:none; border-color:#d97757}
   .settings .toggle-row{display:flex; align-items:center; justify-content:space-between; padding:8px 0}
   .settings .toggle-row label{margin:0}
   .settings .switch{position:relative; width:40px; height:22px; flex-shrink:0}
@@ -191,6 +179,7 @@
   .settings .slider:before{content:""; position:absolute; width:16px; height:16px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.3s}
   .settings .switch input:checked + .slider{background:#d97757}
   .settings .switch input:checked + .slider:before{transform:translateX(18px)}
+  .settings .switch input:focus-visible + .slider{outline:2px solid #fff; outline-offset:2px}
   .settings .save-btn{
     width:100%; padding:10px; border:none; border-radius:8px;
     background:#d97757; color:#fff; font-size:12px; cursor:pointer; margin-top:8px;
@@ -198,6 +187,8 @@
   .settings .save-btn:hover{background:#c96747}
   .settings .save-btn:disabled{opacity:.6; cursor:not-allowed}
   .settings .saved-msg{font-size:11px; color:#2ECC40; margin-top:8px; text-align:center}
+  .settings .saved-msg.error{color:#e06c75}
+  .settings .health-msg{margin-top:8px; font-size:11px; line-height:1.4; color:#d8a35d}
   
   /* ---------- loading ---------- */
   .loading-overlay{
@@ -224,10 +215,10 @@
     <span class="title">AI&nbsp;Usage</span>
     <span class="updated" id="updated">…</span>
     <span class="countdown" id="countdown"></span>
-    <button id="btn-refresh" title="">⟳</button>
-    <button id="btn-pin" title="">◉</button>
-    <button id="btn-tray" title="">⎯</button>
-    <button id="btn-close" title="">✕</button>
+    <button id="btn-refresh" title="Refresh" aria-label="Refresh">⟳</button>
+    <button id="btn-pin" title="Always on top" aria-label="Always on top">◉</button>
+    <button id="btn-tray" title="Minimize to tray" aria-label="Minimize to tray">⎯</button>
+    <button id="btn-close" title="Close" aria-label="Close">✕</button>
   </header>
 
   <div id="pages">
@@ -248,7 +239,7 @@
     <button data-page="claude" class="n-claude">Claude</button>
     <button data-page="codex" class="n-codex">Codex</button>
     <button data-page="openrouter">OpenRouter</button>
-    <button data-page="settings" id="nav-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Settings"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg></button>
+    <button data-page="settings" id="nav-settings" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg></button>
   </nav>
 </div>
 
@@ -278,9 +269,10 @@ const L10N = {
     tokenExpired: "Истёк",
     loginBtn: "Войти через CLI",
     starting: "Запуск…",
-    opened: "Открыто в новом окне",
+    loginStarted: "Авторизация запущена",
+    loginCompleted: "Авторизация завершена",
     error: "Ошибка",
-    refresh: "Обновить",
+    errorGeneric: "Неизвестная ошибка",
     refreshTitle: "Обновить",
     pinTitle: "Поверх окон",
     trayTitle: "В трей",
@@ -292,50 +284,52 @@ const L10N = {
     onTop: "Поверх всех окон",
     save: "Сохранить",
     saved: "Сохранено!",
+    saveFailed: "Сохранить настройки не удалось",
     general: "Общие",
     winSection: "Окно",
     credits: "Кредиты",
     spentWeek: "за неделю",
-    balance: "Баланс",
-    source: "Источник",
     tokenStale: "⚠ токен истёк — открой CLI и залогинься",
     d: "д",
     h: "ч",
     m: "м",
     sec: "с",
-    days: "д",
-    hours: "ч",
-    mins: "м",
-    dol: " за",
     of: " из",
     language: "Язык / Language",
-    // Window-label translations from widget.py.
-    "Сессия (5 ч)": "Сессия (5 ч)",
-    "Неделя": "Неделя",
-    "Неделя · Opus": "Неделя · Opus",
-    "Неделя · Sonnet": "Неделя · Sonnet",
-    "Неделя · приложения": "Неделя · приложения",
-    "Месяц": "Месяц",
-    // Error translations from widget.py.
-    "Внутренняя ошибка:\n": "Внутренняя ошибка:\n",
-    "Не найден токен Claude Code": "Не найден токен Claude Code",
-    "Не найден ~/.codex/auth.json": "Не найден ~/.codex/auth.json",
-    "Не удалось прочитать auth.json": "Не удалось прочитать auth.json",
-    "В auth.json нет access_token": "В auth.json нет access_token",
-    "API ответил, но формат не распознан": "API ответил, но формат не распознан",
-    "API ответил, но лимиты не найдены": "API ответил, но лимиты не найдены",
-    "Нет ответа от API": "Нет ответа от API",
-    "Не удалось прочитать": "Не удалось прочитать",
-    "Авторизация запущена": "Авторизация запущена",
-    "Claude CLI не найден": "Claude CLI не найден",
-    "Codex CLI не найден": "Codex CLI не найден",
-    "Ошибка:": "Ошибка:",
-    "Доп. лимит": "Доп. лимит",
     resetAlert: "Оповещение о сбросе недели",
     connectors: "Коннекторы",
     connConnected: "подключено",
     connMissing: "не настроено",
     stateWriteFailed: "Не удалось записать состояние оповещений на диск: они не переживут перезапуск. Подробности в widget-error.log.",
+    configStatus: "Состояние config.json",
+    configHealthy: "config.json исправен.",
+    configMissing: "config.json ещё не создан; он появится при сохранении.",
+    configRecovered: "Повреждённый config.json сохранён в резервную копию: {backup}",
+    error_claude_credentials_read_failed: "Не удалось прочитать учётные данные Claude: {path}",
+    error_claude_credentials_missing: "Учётные данные Claude Code не найдены. Выполните `claude auth login`.",
+    error_claude_token_missing: "В учётных данных Claude нет токена. Выполните `claude auth login`.",
+    error_codex_credentials_missing: "Файл авторизации Codex не найден. Выполните `codex login`.",
+    error_codex_credentials_read_failed: "Не удалось прочитать файл авторизации Codex.",
+    error_codex_token_missing: "В файле авторизации Codex нет access_token. Выполните `codex login`.",
+    error_claude_auth_expired: "Токен Claude отклонён (HTTP {status}). Войдите снова через CLI.",
+    error_codex_auth_expired: "Токен Codex отклонён (HTTP {status}). Войдите снова через CLI.",
+    error_openrouter_key_missing: "OPENROUTER_API_KEY не задан.",
+    error_openrouter_key_rejected: "Ключ OpenRouter отклонён (HTTP {status}). Проверьте OPENROUTER_API_KEY.",
+    error_api_http_error: "{service}: ошибка HTTP {status}.",
+    error_api_request_failed: "Не удалось запросить данные у {service}.",
+    error_api_no_response: "{service} не ответил.",
+    error_api_format_unrecognized: "{service} вернул неизвестный формат данных.",
+    error_api_limits_missing: "{service} не вернул данные о лимитах.",
+    error_internal_error: "Внутренняя ошибка виджета.",
+    error_cli_not_found: "CLI `{cli}` не найден.",
+    error_cli_shell_missing: "Не найден системный обработчик команд Windows.",
+    error_cli_early_exit: "`{cli}` завершился с кодом {exit_code}.",
+    error_cli_launch_failed: "Не удалось запустить `{cli}`.",
+    error_config_corrupt: "config.json повреждён. Изменения не будут записаны до сохранения в Настройках.",
+    error_config_backup_failed: "Не удалось создать резервную копию повреждённого config.json.",
+    error_config_write_failed: "Не удалось записать config.json. Подробности в widget-error.log.",
+    error_config_invalid: "Настройки имеют неверный формат.",
+    error_window_update_failed: "Настройки сохранены, но режим окна применить не удалось.",
   },
   en: {
     loading: "Loading…",
@@ -356,9 +350,10 @@ const L10N = {
     tokenExpired: "Expired",
     loginBtn: "Login via CLI",
     starting: "Starting…",
-    opened: "Opened in new window",
+    loginStarted: "Authorization started",
+    loginCompleted: "Authorization completed",
     error: "Error",
-    refresh: "Refresh",
+    errorGeneric: "Unknown error",
     refreshTitle: "Refresh",
     pinTitle: "Always on top",
     trayTitle: "Minimize to tray",
@@ -370,77 +365,91 @@ const L10N = {
     onTop: "Always on top",
     save: "Save",
     saved: "Saved!",
+    saveFailed: "Could not save settings",
     general: "General",
     winSection: "Window",
     credits: "Credits",
     spentWeek: "this week",
-    balance: "Balance",
-    source: "Source",
     tokenStale: "⚠ token expired — open CLI and login",
     d: "d",
     h: "h",
     m: "m",
     sec: "s",
-    days: "d",
-    hours: "h",
-    mins: "m",
     of: " of ",
     language: "Language",
-    // Window-label translations from widget.py.
-    "Сессия (5 ч)": "Session (5h)",
-    "Неделя": "Week",
-    "Неделя · Opus": "Week · Opus",
-    "Неделя · Sonnet": "Week · Sonnet",
-    "Неделя · приложения": "Week · apps",
-    "Месяц": "Month",
-    // Error translations from widget.py.
-    "Внутренняя ошибка:\n": "Internal error:\n",
-    "Не найден токен Claude Code": "Claude Code token not found",
-    "Не найден ~/.codex/auth.json": "Codex auth.json not found",
-    "Не удалось прочитать auth.json": "Failed to read auth.json",
-    "В auth.json нет access_token": "No access_token in auth.json",
-    "API ответил, но формат не распознан": "API responded, format not recognized",
-    "API ответил, но лимиты не найдены": "API responded, limits not found",
-    "Нет ответа от API": "No response from API",
-    "Не удалось прочитать": "Failed to read",
-    "Авторизация запущена": "Authorization started",
-    "Claude CLI не найден": "Claude CLI not found",
-    "Codex CLI не найден": "Codex CLI not found",
-    "Ошибка:": "Error:",
-    "Доп. лимит": "Extra limit",
     resetAlert: "Weekly reset alert",
     connectors: "Connectors",
     connConnected: "connected",
     connMissing: "not configured",
     stateWriteFailed: "Could not write alert state to disk: alerts will not survive a restart. See widget-error.log for details.",
+    configStatus: "config.json status",
+    configHealthy: "config.json is healthy.",
+    configMissing: "config.json does not exist yet; it will be created on save.",
+    configRecovered: "The corrupt config.json was backed up as {backup}",
+    error_claude_credentials_read_failed: "Could not read Claude credentials: {path}",
+    error_claude_credentials_missing: "Claude Code credentials were not found. Run `claude auth login`.",
+    error_claude_token_missing: "Claude credentials contain no token. Run `claude auth login`.",
+    error_codex_credentials_missing: "Codex auth.json was not found. Run `codex login`.",
+    error_codex_credentials_read_failed: "Could not read Codex auth.json.",
+    error_codex_token_missing: "Codex auth.json contains no access_token. Run `codex login`.",
+    error_claude_auth_expired: "Claude rejected the token (HTTP {status}). Log in again through the CLI.",
+    error_codex_auth_expired: "Codex rejected the token (HTTP {status}). Log in again through the CLI.",
+    error_openrouter_key_missing: "OPENROUTER_API_KEY is not set.",
+    error_openrouter_key_rejected: "OpenRouter rejected the key (HTTP {status}). Check OPENROUTER_API_KEY.",
+    error_api_http_error: "{service}: HTTP {status}.",
+    error_api_request_failed: "Could not request usage from {service}.",
+    error_api_no_response: "{service} did not respond.",
+    error_api_format_unrecognized: "{service} returned an unrecognized data format.",
+    error_api_limits_missing: "{service} returned no limit data.",
+    error_internal_error: "Internal widget error.",
+    error_cli_not_found: "The `{cli}` CLI was not found.",
+    error_cli_shell_missing: "The Windows command processor was not found.",
+    error_cli_early_exit: "`{cli}` exited with code {exit_code}.",
+    error_cli_launch_failed: "Could not launch `{cli}`.",
+    error_config_corrupt: "config.json is corrupt. Changes are blocked until you recover it by saving Settings.",
+    error_config_backup_failed: "Could not back up the corrupt config.json.",
+    error_config_write_failed: "Could not write config.json. See widget-error.log for details.",
+    error_config_invalid: "The settings payload is invalid.",
+    error_window_update_failed: "Settings were saved, but the window mode could not be applied.",
   },
 };
 
 function t(key){ return L10N[LANG]?.[key] || L10N["en"][key] || key; }
 
-// Translate errors and dynamic strings by exact match; otherwise leave unchanged.
-function terr(msg){
-  if(!msg) return "";
-  // Exact match.
-  const fullTr = t(msg);
-  if(fullTr !== msg) return fullTr;
-  // Match the first line for internal errors that include a traceback.
-  const firstLine = msg.split("\n")[0];
-  const lineTr = t(firstLine);
-  if(lineTr !== firstLine) return lineTr + (msg.includes("\n") ? msg.substring(msg.indexOf("\n")) : "");
-  // Translate the numbered "extra limit" prefix.
-  if(msg.startsWith("Доп. лимит ")){
-    return t("Доп. лимит") + " " + msg.split(" ").slice(2).join(" ");
+function template(text, params={}){
+  return String(text).replace(/\{([a-z_]+)\}/gi, (_, key) =>
+    Object.prototype.hasOwnProperty.call(params, key) ? String(params[key]) : "");
+}
+
+// Structured errors are localized by code. Strings remain a compatibility path.
+function terr(value){
+  if(!value) return "";
+  if(typeof value === "string"){
+    const translated = t(value);
+    return translated !== value ? translated : value;
   }
-  return msg;
+  if(typeof value !== "object") return t("errorGeneric");
+  const key = "error_" + String(value.code || "");
+  const translated = t(key);
+  let message = translated === key
+    ? t("errorGeneric")
+    : template(translated, value.params || {});
+  if(value.detail) message += ` (${String(value.detail)})`;
+  return message;
 }
 
 function updateTitles(){
   const btn = id => document.getElementById(id);
-  if(btn("btn-refresh")) btn("btn-refresh").title = t("refreshTitle");
-  if(btn("btn-pin")) btn("btn-pin").title = t("pinTitle");
-  if(btn("btn-tray")) btn("btn-tray").title = t("trayTitle");
-  if(btn("btn-close")) btn("btn-close").title = t("closeTitle");
+  for(const [id, key] of [
+    ["btn-refresh", "refreshTitle"], ["btn-pin", "pinTitle"],
+    ["btn-tray", "trayTitle"], ["btn-close", "closeTitle"],
+  ]){
+    const control = btn(id);
+    if(control){
+      control.title = t(key);
+      control.setAttribute("aria-label", t(key));
+    }
+  }
   const lt = btn("loading-text");
   if(lt) lt.textContent = t("loadingData");
   if(btn("nav-overview")) btn("nav-overview").textContent = t("overview");
@@ -457,8 +466,8 @@ const OPENAI_MARK = '<svg viewBox="0 0 24 24" fill="currentColor" role="img" ari
 /* Inline OpenRouter SVG logo avoids font dependence. */
 const OPENROUTER_MARK = '<svg viewBox="0 0 24 24" fill="currentColor" role="img" aria-label="OpenRouter">'
   + '<path d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>';
-const GLYPH = { claude:"✳", codex:OPENAI_MARK, opencode:"█", openrouter:OPENROUTER_MARK };
-const THEME = { claude:"th-claude", codex:"th-codex", opencode:"th-opencode", openrouter:"th-openrouter" };
+const GLYPH = { claude:"✳", codex:OPENAI_MARK, openrouter:OPENROUTER_MARK };
+const THEME = { claude:"th-claude", codex:"th-codex", openrouter:"th-openrouter" };
 
 /* ---------- utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -478,22 +487,14 @@ function fmtCountdown(epoch){
 function fmtClock(epoch){
   if(!epoch) return "";
   const dt = new Date(epoch*1000);
-  const t = dt.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+  const clock = dt.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
   const today = new Date(); 
   const same = dt.toDateString() === today.toDateString();
-  return same ? t : dt.toLocaleDateString([], {day:"numeric", month:"short"}) + " " + t;
+  return same ? clock : dt.toLocaleDateString([], {day:"numeric", month:"short"}) + " " + clock;
 }
 function pctText(w){
   if(w.remaining_pct == null) return "—";
   return (Math.round(w.remaining_pct*10)/10).toLocaleString(LANG === "en" ? "en-US" : "ru-RU");
-}
-function asciiBar(pctRemaining, width=18){
-  if(pctRemaining == null) return "";
-  const on = Math.round(width * pctRemaining / 100);
-  return "<span>" + "█".repeat(on) + "</span><span class='off'>" + "░".repeat(width-on) + "</span>";
-}
-function sessionWin(p){
-  return (p.windows||[]).find(w => w.id === "session") || (p.windows||[])[0] || null;
 }
 /* Overview windows: session + week, when available. */
 function overviewWins(p){
@@ -520,7 +521,7 @@ function renderOverview(){
     const theme = THEME[id];
     if(p.kind === "balance"){
       const b = (p.meta && p.meta.balance) || null;
-      html += `<div class="strip ${theme}" data-goto="${id}">
+      html += `<button type="button" class="strip ${theme}" data-goto="${id}" aria-label="${esc(p.name || id)}">
         <div class="top">
           <span class="glyph">${GLYPH[id]}</span>
           <span class="name">${esc(p.name || id)}</span>
@@ -534,10 +535,10 @@ function renderOverview(){
       } else {
         html += `<div class="err">${esc(terr(p.error) || t("noData"))}</div>`;
       }
-      html += `</div>`;
+      html += `</button>`;
       continue;
     }
-    html += `<div class="strip ${theme}" data-goto="${id}">
+    html += `<button type="button" class="strip ${theme}" data-goto="${id}" aria-label="${esc(p.name || id)}">
       <div class="top">
         <span class="glyph">${GLYPH[id]}</span>
         <span class="name">${esc(p.name || id)}</span>
@@ -550,16 +551,12 @@ function renderOverview(){
             <span>${esc(t(win.label))} · ${win.remaining_pct != null ? pctText(win) + "% " : ""}${t("remaining")}</span>
             <span>${win.resets_at ? t("resetsIn") + " " + fmtCountdown(win.resets_at) : ""}</span>
           </div>`;
-        if(id === "opencode"){
-          html += `<div class="bar ${low}"><div class="asciibar ${low}">${asciiBar(win.remaining_pct)}</div></div>`;
-        } else {
-          html += `<div class="bar ${low}"><i style="width:${win.remaining_pct ?? 0}%"></i></div>`;
-        }
+        html += `<div class="bar ${low}"><i style="width:${win.remaining_pct ?? 0}%"></i></div>`;
       }
     } else {
       html += `<div class="err">${esc(terr(p.error) || t("noData"))}</div>`;
     }
-    html += `</div>`;
+    html += `</button>`;
   }
   el.innerHTML = html;
   el.querySelectorAll(".strip").forEach(s =>
@@ -605,13 +602,9 @@ function renderDetail(id){
     html += `<div class="win">
       <div class="head">
         <span class="label">${esc(t(w.label))}</span>
-        <span class="bigpct ${id==='opencode'&&low?'low':''}">${pctText(w)}<small> % ${t("remaining")}</small></span>
+        <span class="bigpct">${pctText(w)}<small> % ${t("remaining")}</small></span>
       </div>`;
-    if(id === "opencode"){
-      html += `<div class="bar"><div class="asciibar ${low}">${asciiBar(w.remaining_pct, 24)}</div></div>`;
-    } else {
-      html += `<div class="bar ${low}"><i style="width:${w.remaining_pct ?? 0}%"></i></div>`;
-    }
+    html += `<div class="bar ${low}"><i style="width:${w.remaining_pct ?? 0}%"></i></div>`;
     if(w.used_usd != null && w.limit_usd != null){
       html += `<div class="usd">$${(+w.used_usd).toFixed(2)}${t("of")}$${(+w.limit_usd).toFixed(2)}</div>`;
     }
@@ -634,8 +627,6 @@ function renderDetail(id){
   const metaBits = [];
   if(p.meta){
     if(p.meta.credits != null) metaBits.push(t("credits") + ": " + p.meta.credits);
-    if(p.meta.balance_usd != null) metaBits.push(t("balance") + ": $" + (+p.meta.balance_usd).toFixed(2));
-    if(p.meta.endpoint) metaBits.push(t("source") + ": " + p.meta.endpoint);
     if(p.meta.token_stale) metaBits.push(t("tokenStale"));
   }
   if(metaBits.length){
@@ -656,11 +647,13 @@ function renderDetail(id){
           : await window.pywebview.api.login_codex();
         
         if(result.success){
-          btn.textContent = terr(result.output);
+          btn.textContent = result.value === "login_completed"
+            ? t("loginCompleted")
+            : t("loginStarted");
           // Refresh automatically after 30 seconds.
           setTimeout(() => window.pywebview.api.refresh_now(), 30000);
         } else {
-          btn.textContent = terr(result.output) || t("error");
+          btn.textContent = terr(result.error) || t("error");
           btn.disabled = false;
         }
       } catch(e){
@@ -683,35 +676,74 @@ function renderAll(){
   }
 }
 
-function renderSettings(){
+let settingsMounted = false;
+let settingsDirty = false;
+let settingsRenderedLang = null;
+
+function syncSettingsControls(cfg){
+  if(!cfg || settingsDirty) return;
+  $("#cfg-refresh").value = cfg.refresh_interval_sec ?? 300;
+  $("#cfg-lang").value = cfg.language || "en";
+  $("#cfg-width").value = cfg.window?.width ?? 380;
+  $("#cfg-height").value = cfg.window?.height ?? 400;
+  $("#cfg-ontop").checked = cfg.window?.on_top !== false;
+  $("#cfg-alert").checked = cfg.reset_alert?.enabled !== false;
+}
+
+function updateSettingsStatus(){
+  const connectors = $("#settings-connectors");
+  if(connectors){
+    connectors.innerHTML = ["claude","codex","openrouter"].map(id => {
+      const p = (DATA.providers || {})[id];
+      const on = p && p.ok;
+      const src = p && p.meta && p.meta.key_source;
+      return `<div class="field" style="align-items:center">
+        <label>${esc(p ? p.name : id)}</label>
+        <span style="font-size:11px; opacity:.8">
+          <span style="color:${on ? '#3ecf8e' : '#d05252'}">&#9679;</span>
+          ${on ? t("connConnected") : t("connMissing")}${src ? " &middot; " + esc(src) : ""}
+        </span>
+      </div>`;
+    }).join("");
+  }
+
+  const health = $("#settings-health");
+  if(health){
+    const parts = [];
+    if(DATA.state_write_failed){
+      parts.push(`<div style="color:#d05252">&#9888; ${esc(t("stateWriteFailed"))}</div>`);
+    }
+    const configHealth = DATA.config_health || {};
+    if(configHealth.error){
+      parts.push(`<div>&#9888; ${esc(terr(configHealth.error))}</div>`);
+    } else if(configHealth.status === "recovered" && configHealth.backup_path){
+      parts.push(`<div>${esc(template(t("configRecovered"), {backup: configHealth.backup_path}))}</div>`);
+    } else if(configHealth.status === "missing"){
+      parts.push(`<div>${esc(t("configMissing"))}</div>`);
+    } else {
+      parts.push(`<div>${esc(t("configHealthy"))}</div>`);
+    }
+    health.innerHTML = parts.join("");
+    health.style.display = parts.length ? "block" : "none";
+  }
+}
+
+function mountSettings(cfg){
   const el = $("#page-settings");
-  if(!DATA || !DATA._config) return;
-  const cfg = DATA._config;
-  
-  // Preserve current field values when present.
-  const existingRefresh = $("#cfg-refresh")?.value;
-  const existingWidth = $("#cfg-width")?.value;
-  const existingHeight = $("#cfg-height")?.value;
-  const existingOnTop = $("#cfg-ontop")?.checked;
-  
-  // Do not recreate existing fields while the user is editing them.
-  if(existingRefresh && document.activeElement?.id?.startsWith("cfg-")
-     && document.activeElement.type !== "checkbox") return;
-  
   el.innerHTML = `
     <div class="settings">
       <h2>${t("settings")}</h2>
       <div class="section">
         <div class="section-title">${t("general")}</div>
         <div class="field">
-          <label>${t("refreshInterval")}</label>
-          <input type="number" id="cfg-refresh" value="${cfg.refresh_interval_sec || 300}" min="15" max="600">
+          <label for="cfg-refresh">${t("refreshInterval")}</label>
+          <input type="number" id="cfg-refresh" min="15" max="600">
         </div>
         <div class="field">
-          <label>${t("language")}</label>
-          <select id="cfg-lang" style="width:100%; padding:8px 10px; background:#1a1a1e; border:1px solid #2a2a2e; border-radius:6px; color:#ececf1; font-size:12px; box-sizing:border-box;">
-            <option value="ru" ${(cfg.language || 'en') === 'ru' ? 'selected' : ''}>Русский</option>
-            <option value="en" ${(cfg.language || 'en') === 'en' ? 'selected' : ''}>English</option>
+          <label for="cfg-lang">${t("language")}</label>
+          <select id="cfg-lang">
+            <option value="ru">Русский</option>
+            <option value="en">English</option>
           </select>
         </div>
       </div>
@@ -719,18 +751,18 @@ function renderSettings(){
         <div class="section-title">${t("winSection")}</div>
         <div class="field-row">
           <div class="field">
-            <label>${t("width")}</label>
-            <input type="number" id="cfg-width" value="${cfg.window?.width || 380}" min="200" max="800">
+            <label for="cfg-width">${t("width")}</label>
+            <input type="number" id="cfg-width" min="200" max="800">
           </div>
           <div class="field">
-            <label>${t("height")}</label>
-            <input type="number" id="cfg-height" value="${cfg.window?.height || 400}" min="300" max="1200">
+            <label for="cfg-height">${t("height")}</label>
+            <input type="number" id="cfg-height" min="300" max="1200">
           </div>
         </div>
         <div class="toggle-row">
-          <label>${t("onTop")}</label>
+          <label for="cfg-ontop">${t("onTop")}</label>
           <label class="switch">
-            <input type="checkbox" id="cfg-ontop" ${cfg.window?.on_top ? 'checked' : ''}>
+            <input type="checkbox" id="cfg-ontop" aria-label="${esc(t("onTop"))}">
             <span class="slider"></span>
           </label>
         </div>
@@ -738,68 +770,103 @@ function renderSettings(){
       <div class="section">
         <div class="section-title">${t("resetAlert")}</div>
         <div class="toggle-row">
-          <label>${t("resetAlert")}</label>
+          <label for="cfg-alert">${t("resetAlert")}</label>
           <label class="switch">
-            <input type="checkbox" id="cfg-alert" ${cfg.reset_alert?.enabled !== false ? 'checked' : ''}>
+            <input type="checkbox" id="cfg-alert" aria-label="${esc(t("resetAlert"))}">
             <span class="slider"></span>
           </label>
         </div>
       </div>
       <div class="section">
         <div class="section-title">${t("connectors")}</div>
-        ${["claude","codex","openrouter"].map(id => {
-          const p = (DATA.providers || {})[id];
-          const on = p && p.ok;
-          const src = p && p.meta && p.meta.key_source;
-          return `<div class="field" style="align-items:center">
-            <label>${esc(p ? p.name : id)}</label>
-            <span style="font-size:11px; opacity:.8">
-              <span style="color:${on ? '#3ecf8e' : '#d05252'}">&#9679;</span>
-              ${on ? t("connConnected") : t("connMissing")}${src ? " &middot; " + esc(src) : ""}
-            </span>
-          </div>`;
-        }).join("")}
-        ${DATA.state_write_failed ? `<div style="margin-top:8px; font-size:11px; line-height:1.4; color:#d05252">&#9888; ${t("stateWriteFailed")}</div>` : ""}
+        <div id="settings-connectors"></div>
+      </div>
+      <div class="section">
+        <div class="section-title">${t("configStatus")}</div>
+        <div class="health-msg" id="settings-health" style="display:none"></div>
       </div>
       <button class="save-btn" id="btn-save-settings">${t("save")}</button>
-      <div class="saved-msg" id="saved-msg" style="display:none">${t("saved")}</div>
+      <div class="saved-msg" id="saved-msg" role="status" aria-live="polite" style="display:none"></div>
     </div>
   `;
-  
+  settingsMounted = true;
+  settingsRenderedLang = LANG;
+  settingsDirty = false;
+  syncSettingsControls(cfg);
+
+  for(const control of document.querySelectorAll("#page-settings input, #page-settings select")){
+    control.addEventListener("input", () => { settingsDirty = true; });
+    control.addEventListener("change", () => { settingsDirty = true; });
+  }
+
   $("#btn-save-settings").addEventListener("click", async () => {
+    const saveButton = $("#btn-save-settings");
+    const message = $("#saved-msg");
     const lang = $("#cfg-lang")?.value || LANG;
     const newCfg = {
       language: lang,
-      refresh_interval_sec: parseInt($("#cfg-refresh").value) || 300,
+      refresh_interval_sec: parseInt($("#cfg-refresh").value, 10) || 300,
       window: {
-        width: parseInt($("#cfg-width").value) || 380,
-        height: parseInt($("#cfg-height").value) || 400,
+        width: parseInt($("#cfg-width").value, 10) || 380,
+        height: parseInt($("#cfg-height").value, 10) || 400,
         on_top: $("#cfg-ontop").checked,
       },
       reset_alert: { enabled: $("#cfg-alert").checked },
     };
-    const ok = await window.pywebview.api.save_config_api(newCfg);
-    if(ok === true){
-      const msg = $("#saved-msg");
-      msg.style.display = "block";
-      setTimeout(() => msg.style.display = "none", 2000);
-      // Apply the language immediately without waiting for pull().
-      if(lang !== LANG){
-        LANG = lang;
-        updateTitles();
+    saveButton.disabled = true;
+    message.style.display = "none";
+    message.classList.remove("error");
+    try{
+      const result = await window.pywebview.api.save_config_api(newCfg);
+      if(!result || !result.ok){
+        message.textContent = `${t("saveFailed")}: ${terr(result && result.error)}`;
+        message.classList.add("error");
+        message.style.display = "block";
+        return;
       }
-      pullInterval = newCfg.refresh_interval_sec * 1000;
+      DATA._config = result.config;
+      DATA.config_health = result.config_health || DATA.config_health;
+      DATA.on_top = result.config?.window?.on_top;
+      settingsDirty = false;
+      const languageChanged = lang !== LANG;
+      LANG = lang;
+      pullInterval = (result.config?.refresh_interval_sec || 300) * 1000;
       lastPullTime = Date.now();
-      setTimeout(() => pull(true), 500);
+      if(languageChanged){
+        updateTitles();
+        settingsMounted = false;
+        renderAll();
+        $("#saved-msg").textContent = t("saved");
+        $("#saved-msg").style.display = "block";
+      } else {
+        message.textContent = t("saved");
+        message.style.display = "block";
+        syncSettingsControls(result.config);
+        updateSettingsStatus();
+      }
+      setTimeout(() => {
+        const current = $("#saved-msg");
+        if(current) current.style.display = "none";
+      }, 2000);
+    }catch{
+      message.textContent = `${t("saveFailed")}: ${t("errorGeneric")}`;
+      message.classList.add("error");
+      message.style.display = "block";
+    }finally{
+      const currentButton = $("#btn-save-settings");
+      if(currentButton) currentButton.disabled = false;
     }
   });
-  // Keep the settings on_top toggle in sync with the header button.
-  $("#cfg-ontop").addEventListener("change", async () => {
-    const v = await window.pywebview.api.toggle_on_top();
-    // Update the header button.
-    const pinBtn = $("#btn-pin");
-    if(pinBtn) pinBtn.classList.toggle("pin-on", !!v);
-  });
+}
+
+function renderSettings(){
+  if(!DATA || !DATA._config) return;
+  if(!settingsMounted || (!settingsDirty && settingsRenderedLang !== LANG)){
+    mountSettings(DATA._config);
+  } else {
+    syncSettingsControls(DATA._config);
+  }
+  updateSettingsStatus();
 }
 
 let lastPullTime = 0;
@@ -887,12 +954,24 @@ window.addEventListener("pywebviewready", () => {
   }
   const pinBtn = $("#btn-pin");
   pinBtn.addEventListener("click", async () => {
-    const v = await window.pywebview.api.toggle_on_top();
-    if(v !== null){
-      pinBtn.classList.toggle("pin-on", v);
+    const result = await window.pywebview.api.toggle_on_top();
+    if(result && result.ok){
+      const value = !!result.value;
+      pinBtn.classList.toggle("pin-on", value);
+      if(DATA){
+        DATA.on_top = value;
+        if(DATA._config?.window) DATA._config.window.on_top = value;
+      }
       // Sync the settings toggle.
       const cfgOnTop = $("#cfg-ontop");
-      if(cfgOnTop) cfgOnTop.checked = !!v;
+      if(cfgOnTop) cfgOnTop.checked = value;
+    } else if(result && result.error){
+      const message = $("#saved-msg");
+      if(message){
+        message.textContent = terr(result.error);
+        message.classList.add("error");
+        message.style.display = "block";
+      }
     }
   });
   setInterval(async () => {
@@ -906,20 +985,68 @@ window.addEventListener("pywebviewready", () => {
 setTimeout(() => {
   if(window.pywebview) return;
   clockSkew = 0;
-  DATA = {updated_at: Date.now()/1000, providers: {
+  const demoParams = new URLSearchParams(window.location.search);
+  DATA = {
+    updated_at: Date.now()/1000,
+    now: Date.now()/1000,
+    refresh_interval_sec: 300,
+    on_top: true,
+    token_status: {claude:{status:"valid",remaining:7200},codex:{status:"valid",remaining:7200}},
+    config_health: {status:"ok",error:null,recovery_required:false,backup_path:null},
+    _config: {
+      language:demoParams.get("lang") === "ru" ? "ru" : "en",
+      refresh_interval_sec:300,
+      window:{x:null,y:null,width:380,height:400,on_top:true},
+      reset_alert:{enabled:true,pct_jump_threshold:10,resets_at_advance_sec:3600},
+      openrouter:{api_key:""},
+    },
+    providers: {
     claude:{id:"claude",name:"Claude Code",ok:true,meta:{subscription:"max"},windows:[
-      {id:"session",label:"Сессия (5 ч)",remaining_pct:64,resets_at:Date.now()/1000+7620},
-      {id:"week",label:"Неделя",remaining_pct:41,resets_at:Date.now()/1000+3600*52},
-      {id:"week_opus",label:"Неделя · Opus",remaining_pct:88,resets_at:Date.now()/1000+3600*52}]},
+      {id:"session",label:"session",remaining_pct:64,resets_at:Date.now()/1000+7620},
+      {id:"week",label:"week",remaining_pct:41,resets_at:Date.now()/1000+3600*52},
+      {id:"week_opus",label:"weekOpus",remaining_pct:88,resets_at:Date.now()/1000+3600*52}]},
     codex:{id:"codex",name:"Codex CLI",ok:true,meta:{plan:"plus"},windows:[
-      {id:"session",label:"Сессия (5 ч)",remaining_pct:73,resets_at:Date.now()/1000+4980},
-      {id:"week",label:"Неделя",remaining_pct:12,resets_at:Date.now()/1000+3600*30}]},
-    opencode:{id:"opencode",name:"OpenCode",ok:true,meta:{plan:"go"},windows:[
-      {id:"session",label:"Сессия (5 ч)",remaining_pct:81,used_usd:2.3,limit_usd:12,resets_at:Date.now()/1000+9000},
-      {id:"week",label:"Неделя",remaining_pct:70,used_usd:9,limit_usd:30,resets_at:Date.now()/1000+3600*90},
-      {id:"month",label:"Месяц",remaining_pct:75,used_usd:15,limit_usd:60,resets_at:Date.now()/1000+3600*400}]}
+      {id:"session",label:"session",remaining_pct:73,resets_at:Date.now()/1000+4980},
+      {id:"week",label:"week",remaining_pct:12,resets_at:Date.now()/1000+3600*30}]},
+    openrouter:{id:"openrouter",name:"OpenRouter",kind:"balance",ok:true,
+      meta:{key_source:"env",balance:{remaining_usd:18.75,total_usd:30,used_usd:11.25,week_usd:2.5}},
+      windows:[]}
+  }};
+  const failDemoSaves = demoParams.get("save") === "fail";
+  window.pywebview = {api: {
+    get_data: async () => ({...DATA, now:Date.now()/1000}),
+    refresh_now: async () => {
+      DATA.updated_at = Date.now()/1000;
+      return true;
+    },
+    save_config_api: async cfg => {
+      if(failDemoSaves){
+        return {ok:false,error:{code:"config_write_failed",detail:"demo failure"}};
+      }
+      DATA._config = {
+        ...DATA._config,
+        ...cfg,
+        window:{...DATA._config.window,...(cfg.window || {})},
+        reset_alert:{...DATA._config.reset_alert,...(cfg.reset_alert || {})},
+      };
+      DATA.refresh_interval_sec = DATA._config.refresh_interval_sec;
+      DATA.on_top = DATA._config.window.on_top;
+      return {ok:true,config:DATA._config,config_health:DATA.config_health};
+    },
+    toggle_on_top: async () => {
+      const value = !DATA._config.window.on_top;
+      DATA._config.window.on_top = value;
+      DATA.on_top = value;
+      return {ok:true,value};
+    },
+    login_claude: async () => ({success:true,value:"login_started"}),
+    login_codex: async () => ({success:true,value:"login_started"}),
+    minimize_to_tray: async () => false,
+    update_tray_icon: async () => false,
+    close: async () => true,
   }};
   renderAll();
+  window.dispatchEvent(new Event("pywebviewready"));
 }, 800);
 </script>
 </body>
