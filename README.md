@@ -3,7 +3,7 @@
 A free, open-source Windows desktop widget for monitoring **Claude Code**, **Codex CLI**, and **OpenRouter** usage in real time. It shows session and weekly quotas, reset countdowns, account status, and an OpenRouter dollar balance in an always-on-top window and the Windows system tray -- plus a persistent alert when a weekly quota resets.
 
 [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows)](https://github.com/jspicher/ai-usage-widget)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#license)
 
 This is a fork of [Trafalgardi/ai-usage-widget](https://github.com/Trafalgardi/ai-usage-widget) with a third provider, weekly reset alerts, and several fixes described below.
 
@@ -35,7 +35,7 @@ Use it as a:
 
 1. **Overview** -- every connected provider at a glance: Claude's session and weekly rows, Codex's weekly row, and OpenRouter's dollar balance
 2. **Claude** -- session, weekly usage, and Opus weekly usage when available
-3. **Codex** -- session and weekly usage, plan, and additional model limits
+3. **Codex** -- weekly usage, plan, and additional model limits. Some plans return only a weekly window and no session window; the card reflects whatever the API actually reports
 4. **OpenRouter** -- remaining credit balance, total and used, and spend for the current week
 5. **Settings** -- refresh interval, window size, language, always-on-top mode, and the weekly reset alert toggle
 
@@ -105,13 +105,25 @@ See [Build a Windows executable](#build-a-windows-executable) below if you'd rat
 
 ## Screenshots
 
-![Claude Code usage limits](preview/shot_claude.png)
-![Codex CLI usage limits](preview/shot_codex.png)
-![OpenRouter credit balance](preview/shot_openrouter.png)
-![Widget settings](preview/shot_settings.png)
-![Weekly reset alert](preview/shot_alert.png)
+**Claude** -- session and weekly windows, each with its own remaining percentage, reset countdown, and reset clock time.
 
-All screenshots above are captured against seeded sample data, not a real account.
+![Claude Code usage limits](preview/shot_claude.png)
+
+**Codex** -- the weekly window, correctly labelled. On plans that expose no session window, this is the only window the API returns.
+
+![Codex CLI usage limits](preview/shot_codex.png)
+
+**OpenRouter** -- remaining credit balance, spend against total purchased, and spend for the current week.
+
+![OpenRouter credit balance](preview/shot_openrouter.png)
+
+**Settings** -- refresh interval, language, window size, the weekly reset alert toggle, and read-only connector status.
+
+![Widget settings](preview/shot_settings.png)
+
+**Weekly reset alert** -- stays on screen until dismissed, and does not take keyboard focus.
+
+![Weekly reset alert](preview/shot_alert.png)
 
 ## Privacy and data sources
 
@@ -239,7 +251,7 @@ usage-widget/
 python -m unittest discover -s tests -t . -v
 ```
 
-Runs 23 tests covering weekly reset detection logic and alert-state persistence.
+Runs 34 tests covering weekly reset detection, the clock-jump guarantee described above, derived-timestamp handling, and alert-state persistence including write-failure paths.
 
 ### Build a Windows executable
 
@@ -248,9 +260,20 @@ pip install pyinstaller
 python -m PyInstaller --onefile --windowed --name="AI-Usage" --icon="icon/app.ico" --add-data "ui.html;." --add-data "alert.html;." --add-data "icon/512.png;icon" --add-data "icon/app.ico;icon" --collect-all pywebview --collect-all pystray widget.py
 ```
 
-## Website
+**Where a packaged build keeps its files.** A `--onefile` executable unpacks itself into a temporary
+directory that Windows deletes when the process exits, so anything written there is lost between
+runs. The app therefore separates the two: bundled read-only assets (`ui.html`, `alert.html`, icons)
+are loaded from that temporary directory, while writable state (`config.json`,
+`reset-alert-state.json`, and `widget-error.log` if a write ever fails) is kept **next to the
+executable**. Put the `.exe` somewhere durable rather than in a temp or downloads folder, or your
+settings and reset history will not survive a restart. Running from source keeps everything in the
+project directory, as before.
 
-The project website source is stored in [`docs/`](docs/) and is ready to be published with GitHub Pages.
+## Website and design notes
+
+The upstream project website source lives in [`docs/`](docs/) and is ready to be published with
+GitHub Pages. That directory also holds the design and implementation notes for the additions in
+this fork, under `docs/superpowers/`.
 
 ## Credits
 
@@ -258,4 +281,11 @@ This project is a fork of [Trafalgardi/ai-usage-widget](https://github.com/Trafa
 
 ## License
 
-MIT
+MIT, following the upstream project. Note that neither this fork nor
+[Trafalgardi/ai-usage-widget](https://github.com/Trafalgardi/ai-usage-widget) currently ships a
+`LICENSE` file, so the MIT declaration lives only in these READMEs.
+
+Third-party marks: the OpenAI and OpenRouter glyphs are from
+[simple-icons](https://github.com/simple-icons/simple-icons) (CC0), and the settings gear is from
+[Lucide](https://github.com/lucide-icons/lucide) (ISC). Vendor logos are trademarks of their
+respective owners and are used here only to identify the service each card refers to.
