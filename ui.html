@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <title>AI Usage</title>
@@ -254,7 +254,7 @@
 "use strict";
 let DATA = null;
 let clockSkew = 0;
-let LANG = "ru";
+let LANG = "en";
 
 const L10N = {
   ru: {
@@ -412,7 +412,7 @@ const L10N = {
   },
 };
 
-function t(key){ return L10N[LANG]?.[key] || L10N["ru"][key] || key; }
+function t(key){ return L10N[LANG]?.[key] || L10N["en"][key] || key; }
 
 // Перевод ошибок и динамических строк: точное совпадение → перевод, иначе как есть
 function terr(msg){
@@ -697,13 +697,13 @@ function renderSettings(){
         <div class="section-title">${t("general")}</div>
         <div class="field">
           <label>${t("refreshInterval")}</label>
-          <input type="number" id="cfg-refresh" value="${cfg.refresh_interval_sec || 60}" min="15" max="600">
+          <input type="number" id="cfg-refresh" value="${cfg.refresh_interval_sec || 300}" min="15" max="600">
         </div>
         <div class="field">
           <label>${t("language")}</label>
           <select id="cfg-lang" style="width:100%; padding:8px 10px; background:#1a1a1e; border:1px solid #2a2a2e; border-radius:6px; color:#ececf1; font-size:12px; box-sizing:border-box;">
-            <option value="ru" ${(cfg.language || 'ru') === 'ru' ? 'selected' : ''}>Русский</option>
-            <option value="en" ${cfg.language === 'en' ? 'selected' : ''}>English</option>
+            <option value="ru" ${(cfg.language || 'en') === 'ru' ? 'selected' : ''}>Русский</option>
+            <option value="en" ${(cfg.language || 'en') === 'en' ? 'selected' : ''}>English</option>
           </select>
         </div>
       </div>
@@ -716,7 +716,7 @@ function renderSettings(){
           </div>
           <div class="field">
             <label>${t("height")}</label>
-            <input type="number" id="cfg-height" value="${cfg.window?.height || 600}" min="300" max="1200">
+            <input type="number" id="cfg-height" value="${cfg.window?.height || 390}" min="300" max="1200">
           </div>
         </div>
         <div class="toggle-row">
@@ -761,10 +761,10 @@ function renderSettings(){
     const lang = $("#cfg-lang")?.value || LANG;
     const newCfg = {
       language: lang,
-      refresh_interval_sec: parseInt($("#cfg-refresh").value) || 60,
+      refresh_interval_sec: parseInt($("#cfg-refresh").value) || 300,
       window: {
         width: parseInt($("#cfg-width").value) || 380,
-        height: parseInt($("#cfg-height").value) || 600,
+        height: parseInt($("#cfg-height").value) || 390,
         on_top: $("#cfg-ontop").checked,
       },
       reset_alert: { enabled: $("#cfg-alert").checked },
@@ -822,11 +822,11 @@ async function pull(isManual = false){
     if(snap && snap.updated_at){
       clockSkew = snap.now - Date.now()/1000;
       DATA = snap;
-      pullInterval = (snap.refresh_interval_sec || 60) * 1000;
+      pullInterval = (snap.refresh_interval_sec || 300) * 1000;
       // Синхронизируем язык из конфига
       const oldLang = LANG;
       if(!LANG || (DATA._config && DATA._config.language && DATA._config.language !== LANG)){
-        LANG = (DATA._config && DATA._config.language) || "ru";
+        LANG = (DATA._config && DATA._config.language) || "en";
       }
       if(oldLang !== LANG) updateTitles();
       // Сбрасываем таймер когда данные действительно обновились или при ручном обновлении

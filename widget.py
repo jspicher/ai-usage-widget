@@ -39,13 +39,14 @@ HOME = os.path.expanduser("~")
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 
 DEFAULT_CONFIG = {
-    "refresh_interval_sec": 60,
+    "refresh_interval_sec": 300,
     "reset_alert": {
         "enabled": True,
         "pct_jump_threshold": 10,
         "resets_at_advance_sec": 3600,
     },
-    "window": {"x": None, "y": None, "width": 380, "height": 600, "on_top": True},
+    "window": {"x": None, "y": None, "width": 380, "height": 390, "on_top": True},
+    "language": "en",
     "opencode": {
         # Если у OpenCode появится/известен официальный usage-эндпоинт — впиши его сюда.
         "usage_endpoint": "",
@@ -687,7 +688,7 @@ class TrayManager:
                     setattr(self, thread_attrs[pid], None)
 
     def _create_tray_icon(self, pid, pname, img):
-        lang = (CFG.get("language") or "ru")[:2]
+        lang = (CFG.get("language") or "en")[:2]
         labels = {
             "show": "Show" if lang == "en" else "Показать",
             "refresh": "Refresh" if lang == "en" else "Обновить",
@@ -735,7 +736,7 @@ class TrayManager:
                 secs = max(0, int(resets - time.time()))
                 h, rem = divmod(secs, 3600)
                 m = rem // 60
-                lang = (CFG.get("language") or "ru")[:2]
+                lang = (CFG.get("language") or "en")[:2]
                 hu = "h" if lang == "en" else "ч"
                 mu = "m" if lang == "en" else "м"
                 reset_label = "resets in" if lang == "en" else "сброс"
@@ -972,7 +973,7 @@ def refresh_loop():
             refresh_all()
         except Exception:
             pass
-        STATE.shutdown_event.wait(timeout=max(15, int(CFG.get("refresh_interval_sec", 60))))
+        STATE.shutdown_event.wait(timeout=max(15, int(CFG.get("refresh_interval_sec", 300))))
 
 
 class JsApi:
@@ -980,7 +981,7 @@ class JsApi:
         with STATE.lock:
             snap = copy.deepcopy(STATE.snapshot)
         snap["now"] = time.time()
-        snap["refresh_interval_sec"] = CFG.get("refresh_interval_sec", 60)
+        snap["refresh_interval_sec"] = CFG.get("refresh_interval_sec", 300)
         snap["token_status"] = self.get_token_status()
         try:
             snap["on_top"] = CFG["window"].get("on_top", True)
@@ -1156,7 +1157,7 @@ class JsApi:
     def save_config_api(self, cfg):
         global CFG
         try:
-            old_lang = CFG.get("language", "ru")
+            old_lang = CFG.get("language", "en")
             for k, v in cfg.items():
                 if isinstance(v, dict) and isinstance(CFG.get(k), dict):
                     CFG[k].update(v)
@@ -1168,11 +1169,11 @@ class JsApi:
                 win = webview.windows[0]
                 w = CFG["window"]
                 win.on_top = w.get("on_top", True)
-                win.resize(w.get("width", 380), w.get("height", 600))
+                win.resize(w.get("width", 380), w.get("height", 390))
             except Exception:
                 pass
             # Обновить трей при смене языка
-            if CFG.get("language", "ru") != old_lang:
+            if CFG.get("language", "en") != old_lang:
                 TRAY.update_tooltip()
             return True
         except Exception as e:
@@ -1218,7 +1219,7 @@ def main():
         url=os.path.join(APP_DIR, "ui.html"),
         js_api=JsApi(),
         width=w.get("width", 380),
-        height=w.get("height", 600),
+        height=w.get("height", 390),
         x=w.get("x"),
         y=w.get("y"),
         frameless=True,
