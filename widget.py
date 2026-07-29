@@ -522,6 +522,12 @@ CFG = load_config()
 
 ALERT_STATE_PATH = os.path.join(APP_DIR, "reset-alert-state.json")
 ALERTS = resetwatch.AlertStore(ALERT_STATE_PATH).load()
+# Защищает ALERTS (seen/pending) и сопутствующий save() от гонки между
+# потоком опроса (process_reset_alerts) и потоком GUI (AlertApi).
+# Без этого dismiss() из GUI мог быть перезаписан add()/save() из потока
+# опроса, который успел прочитать состояние ДО отклонения -- оповещение
+# воскресало сразу после того, как пользователь его закрыл.
+ALERTS_LOCK = threading.Lock()
 _FIRST_COMPARE = True
 
 
@@ -701,6 +707,109 @@ class TrayManager:
 TRAY = TrayManager()
 
 
+class AlertApi:
+    """API окна оповещений."""
+
+    def get_alerts(self):
+        with ALERTS_LOCK:
+            return copy.deepcopy(ALERTS.pending)
+
+    def dismiss_alert(self, alert_id):
+        with ALERTS_LOCK:
+            ALERTS.dismiss(alert_id)
+            ALERTS.save()
+        # Вызывается ПОСЛЕ освобождения ALERTS_LOCK: close_if_empty берёт
+        # свой собственный self.lock, и вложенность двух локов в одном
+        # порядке для всех вызывающих не нужна -- проще никогда не
+        # держать оба одновременно.
+        ALERT_WINDOW.close_if_empty()
+        return True
+
+    def dismiss_all(self):
+        with ALERTS_LOCK:
+            ALERTS.dismiss_all()
+            ALERTS.save()
+        ALERT_WINDOW.close_if_empty()
+        return True
+
+
+class AlertWindowManager:
+    """Одно окно на все оповещения. Не забирает фокус."""
+
+    WIDTH = 340
+    MARGIN = 16
+
+    def __init__(self):
+        self.window = None
+        self.lock = threading.Lock()
+
+    def _corner(self, height):
+        """Правый нижний угол рабочей области, с запасом под панель задач."""
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            user32.SetProcessDPIAware()
+            sw = user32.GetSystemMetrics(0)
+            sh = user32.GetSystemMetrics(1)
+            return sw - self.WIDTH - self.MARGIN, sh - height - 60
+        except Exception:
+            return None, None
+
+    def raise_alert(self):
+        with self.lock:
+            if self.window is not None:
+                try:
+                    self.window.evaluate_js(
+                        "window.renderAlerts && window.renderAlerts()")
+                    return
+                except Exception:
+                    self.window = None
+            height = min(460, 90 + 130 * max(1, len(ALERTS.pending)))
+            x, y = self._corner(height)
+            try:
+                self.window = webview.create_window(
+                    "Quota reset",
+                    url=os.path.join(APP_DIR, "alert.html"),
+                    js_api=AlertApi(),
+                    width=self.WIDTH, height=height, x=x, y=y,
+                    frameless=True, easy_drag=True, resizable=False,
+                    on_top=True, focus=False,
+                    background_color="#101012",
+                )
+            except Exception:
+                self.window = None
+
+    def close_if_empty(self):
+        with self.lock:
+            if self.window is not None and not ALERTS.pending:
+                try:
+                    self.window.destroy()
+                except Exception:
+                    pass
+                self.window = None
+
+    def toast(self, events):
+        """Дополнение к окну, а не замена: системный тост сам исчезнет."""
+        if not events or not TRAY_AVAILABLE:
+            return
+        icon = TRAY.icon_claude or TRAY.icon_codex
+        if icon is None:
+            return
+        names = {"claude": "Claude Code", "codex": "Codex CLI"}
+        if len(events) == 1:
+            body = "%s: weekly quota reset" % names.get(
+                events[0]["provider"], events[0]["provider"])
+        else:
+            body = "%d weekly quotas reset" % len(events)
+        try:
+            icon.notify(body, "AI Usage Widget")
+        except Exception:
+            pass
+
+
+ALERT_WINDOW = AlertWindowManager()
+
+
 def process_reset_alerts(providers):
     """Сравнивает свежий снимок с базовой линией и копит оповещения."""
     global _FIRST_COMPARE
@@ -710,19 +819,32 @@ def process_reset_alerts(providers):
     if not cfg.get("enabled", True):
         # Базовая линия обновляется всегда, чтобы повторное включение
         # не выдало пачку старых сбросов.
-        ALERTS.merge_seen(new_readings)
-        if ALERTS.pending:
-            ALERTS.dismiss_all()
-        ALERTS.save()
+        with ALERTS_LOCK:
+            ALERTS.merge_seen(new_readings)
+            if ALERTS.pending:
+                ALERTS.dismiss_all()
+            ALERTS.save()
         _FIRST_COMPARE = False
         return []
 
-    events = resetwatch.detect_resets(
-        ALERTS.seen, new_readings, cfg, while_away=_FIRST_COMPARE)
-    added = ALERTS.add(events)
-    ALERTS.merge_seen(new_readings)
-    ALERTS.save()
+    # Всё чтение-изменение-запись ALERTS -- под одним локом, одним куском,
+    # чтобы поток GUI (dismiss_alert/dismiss_all) не мог наложиться между
+    # detect_resets() и save() и потерять отклонение оповещения.
+    with ALERTS_LOCK:
+        events = resetwatch.detect_resets(
+            ALERTS.seen, new_readings, cfg, while_away=_FIRST_COMPARE)
+        added = ALERTS.add(events)
+        ALERTS.merge_seen(new_readings)
+        ALERTS.save()
+        has_pending = bool(ALERTS.pending)
     _FIRST_COMPARE = False
+
+    # ALERTS_LOCK уже отпущен: toast()/raise_alert() берут своё окно через
+    # ALERT_WINDOW.lock, и локи никогда не вкладываются друг в друга.
+    if added:
+        ALERT_WINDOW.toast(added)
+    if has_pending:
+        ALERT_WINDOW.raise_alert()
     return added
 
 

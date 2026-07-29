@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0; background:#101012; color:#ececf1; font:12px/1.45 "Segoe UI",system-ui,sans-serif;
+       -webkit-user-select:none; user-select:none; overflow:hidden}
+  .wrap{padding:12px 14px}
+  .head{display:flex; align-items:center; gap:8px; margin-bottom:10px}
+  .head .bolt{color:#f5a623; font-size:14px}
+  .head h1{font-size:12px; font-weight:600; margin:0; letter-spacing:.02em}
+  .head .all{margin-left:auto; font-size:10.5px; opacity:.6; cursor:pointer; text-decoration:underline}
+  .row{background:#17171b; border:1px solid #26262c; border-radius:8px;
+       padding:10px 12px; margin-bottom:8px}
+  .row .who{font-size:12px; font-weight:600; margin-bottom:3px}
+  .row .delta{font-size:11px; opacity:.85}
+  .row .delta b{color:#3ecf8e; font-weight:600}
+  .row .when{font-size:10px; opacity:.5; margin-top:3px}
+  .row .away{display:inline-block; margin-top:5px; font-size:9.5px; letter-spacing:.04em;
+             text-transform:uppercase; background:#2b2410; color:#f5a623;
+             border-radius:4px; padding:2px 6px}
+  .row .btn{margin-top:9px; width:100%; padding:6px 0; font-size:11px; cursor:pointer;
+            background:#26262c; color:#ececf1; border:1px solid #33333a; border-radius:6px}
+  .row .btn:hover{background:#2f2f36}
+  .empty{opacity:.5; text-align:center; padding:18px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <span class="bolt">&#9889;</span>
+    <h1 id="title">Quota reset</h1>
+    <span class="all" id="all" style="display:none">Dismiss all</span>
+  </div>
+  <div id="rows"></div>
+</div>
+<script>
+const NAMES = {claude:"Claude Code", codex:"Codex CLI"};
+
+function esc(s){ return String(s).replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+function clock(epoch){
+  const d = new Date(epoch * 1000);
+  return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+}
+
+async function renderAlerts(){
+  if(!window.pywebview || !window.pywebview.api) return;
+  const alerts = await window.pywebview.api.get_alerts();
+  const rows = document.getElementById("rows");
+  document.getElementById("all").style.display = alerts.length > 1 ? "inline" : "none";
+  if(!alerts.length){ rows.innerHTML = '<div class="empty">No alerts</div>'; return; }
+  rows.innerHTML = alerts.map(a => `
+    <div class="row">
+      <div class="who">${esc(NAMES[a.provider] || a.provider)}</div>
+      <div class="delta">Weekly ${Math.round(a.from_pct)}% &rarr; <b>${Math.round(a.to_pct)}%</b> remaining</div>
+      <div class="when">detected ${clock(a.detected_at)}</div>
+      ${a.while_away ? '<div class="away">while you were away</div>' : ''}
+      <button class="btn" data-id="${esc(a.id)}">Dismiss</button>
+    </div>`).join("");
+  rows.querySelectorAll(".btn").forEach(b =>
+    b.addEventListener("click", async () => {
+      await window.pywebview.api.dismiss_alert(b.dataset.id);
+      renderAlerts();
+    }));
+}
+window.renderAlerts = renderAlerts;
+
+document.getElementById("all").addEventListener("click", async () => {
+  await window.pywebview.api.dismiss_all();
+  renderAlerts();
+});
+
+window.addEventListener("pywebviewready", renderAlerts);
+setTimeout(renderAlerts, 300);
+</script>
+</body>
+</html>
