@@ -45,7 +45,7 @@ DEFAULT_CONFIG = {
         "pct_jump_threshold": 10,
         "resets_at_advance_sec": 3600,
     },
-    "window": {"x": None, "y": None, "width": 380, "height": 390, "on_top": True},
+    "window": {"x": None, "y": None, "width": 380, "height": 400, "on_top": True},
     "language": "en",
     "opencode": {
         # Если у OpenCode появится/известен официальный usage-эндпоинт — впиши его сюда.
@@ -1169,7 +1169,7 @@ class JsApi:
                 win = webview.windows[0]
                 w = CFG["window"]
                 win.on_top = w.get("on_top", True)
-                win.resize(w.get("width", 380), w.get("height", 390))
+                win.resize(w.get("width", 380), w.get("height", 400))
             except Exception:
                 pass
             # Обновить трей при смене языка
@@ -1219,7 +1219,7 @@ def main():
         url=os.path.join(APP_DIR, "ui.html"),
         js_api=JsApi(),
         width=w.get("width", 380),
-        height=w.get("height", 390),
+        height=w.get("height", 400),
         x=w.get("x"),
         y=w.get("y"),
         frameless=True,
