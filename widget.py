@@ -995,6 +995,11 @@ def process_reset_alerts(providers):
                 ALERTS.dismiss_all()
             ALERTS.save()
         _FIRST_COMPARE = False
+        # ALERTS_LOCK уже отпущен -- close_if_empty берёт свой лок окна, и
+        # эти два лока не вкладываются друг в друга ни в одном порядке.
+        # Выключение оповещений должно убирать и то, что уже висит на
+        # экране, иначе окно остаётся со строками, которых больше нет.
+        ALERT_WINDOW.close_if_empty()
         return []
 
     # Всё чтение-изменение-запись ALERTS -- под одним локом, одним куском,
