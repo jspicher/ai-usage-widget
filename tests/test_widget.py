@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import json
 import os
@@ -20,6 +21,23 @@ def healthy_config_state():
     }
 
 
+@contextlib.contextmanager
+def config_sandbox():
+    """Point CONFIG_PATH and ERROR_LOG_PATH at a throwaway directory.
+
+    Both patches matter. Without ERROR_LOG_PATH, any test that walks a failure
+    path appends to the real widget-error.log sitting next to the source tree.
+    """
+    with tempfile.TemporaryDirectory() as folder:
+        config_path = os.path.join(folder, "config.json")
+        log_path = os.path.join(folder, "widget-error.log")
+        with (
+            mock.patch.object(widget, "CONFIG_PATH", config_path),
+            mock.patch.object(widget, "ERROR_LOG_PATH", log_path),
+        ):
+            yield folder, config_path, log_path
+
+
 class WidgetTestCase(unittest.TestCase):
     def setUp(self):
         self.original_cfg = widget.CFG
@@ -34,12 +52,10 @@ class WidgetTestCase(unittest.TestCase):
 
 class TestConfig(WidgetTestCase):
     def test_load_merges_nested_values_and_preserves_defaults(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "config.json")
+        with config_sandbox() as (_folder, path, _log):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({"window": {"width": 512}, "language": "ru"}, f)
-            with mock.patch.object(widget, "CONFIG_PATH", path):
-                cfg = widget.load_config()
+            cfg = widget.load_config()
         self.assertEqual(cfg["window"]["width"], 512)
         self.assertEqual(cfg["window"]["height"], 400)
         self.assertEqual(cfg["language"], "ru")
@@ -94,15 +110,11 @@ class TestConfig(WidgetTestCase):
         self.assertEqual(cfg["window"]["height"], 555)
 
     def test_save_is_atomic_and_leaves_no_temporary_file(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "config.json")
+        with config_sandbox() as (folder, path, _log):
             widget.CONFIG_HEALTH = healthy_config_state()
             real_replace = os.replace
-            with (
-                mock.patch.object(widget, "CONFIG_PATH", path),
-                mock.patch.object(
-                    widget.os, "replace", wraps=real_replace) as replace,
-            ):
+            with mock.patch.object(
+                    widget.os, "replace", wraps=real_replace) as replace:
                 self.assertTrue(widget.save_config(widget.DEFAULT_CONFIG))
             replace.assert_called_once()
             source, target = replace.call_args.args
@@ -114,51 +126,38 @@ class TestConfig(WidgetTestCase):
             )
 
     def test_corrupt_file_is_untouched_by_automatic_save(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "config.json")
-            log_path = os.path.join(folder, "widget-error.log")
+        with config_sandbox() as (_folder, path, _log):
             corrupt = b'{"window":'
             with open(path, "wb") as f:
                 f.write(corrupt)
-            with (
-                mock.patch.object(widget, "CONFIG_PATH", path),
-                mock.patch.object(widget, "ERROR_LOG_PATH", log_path),
-            ):
-                cfg = widget.load_config()
-                self.assertEqual(widget.CONFIG_HEALTH["status"], "corrupt")
-                self.assertFalse(widget.save_config(cfg))
-                with open(path, "rb") as f:
-                    self.assertEqual(f.read(), corrupt)
+            cfg = widget.load_config()
+            self.assertEqual(widget.CONFIG_HEALTH["status"], "corrupt")
+            self.assertFalse(widget.save_config(cfg))
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), corrupt)
 
     def test_explicit_recovery_backs_up_corrupt_file(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "config.json")
-            log_path = os.path.join(folder, "widget-error.log")
+        with config_sandbox() as (folder, path, _log):
             corrupt = b"{broken"
             with open(path, "wb") as f:
                 f.write(corrupt)
-            with (
-                mock.patch.object(widget, "CONFIG_PATH", path),
-                mock.patch.object(widget, "ERROR_LOG_PATH", log_path),
-            ):
-                widget.load_config()
-                self.assertTrue(
-                    widget.save_config(widget.DEFAULT_CONFIG, allow_recovery=True))
-                backups = [
-                    name for name in os.listdir(folder)
-                    if name.startswith("config.json.corrupt-")
-                    and name.endswith(".bak")
-                ]
-                self.assertEqual(len(backups), 1)
-                with open(os.path.join(folder, backups[0]), "rb") as f:
-                    self.assertEqual(f.read(), corrupt)
-                with open(path, "r", encoding="utf-8") as f:
-                    self.assertEqual(json.load(f)["refresh_interval_sec"], 300)
-                self.assertEqual(widget.CONFIG_HEALTH["status"], "recovered")
+            widget.load_config()
+            self.assertTrue(
+                widget.save_config(widget.DEFAULT_CONFIG, allow_recovery=True))
+            backups = [
+                name for name in os.listdir(folder)
+                if name.startswith("config.json.corrupt-")
+                and name.endswith(".bak")
+            ]
+            self.assertEqual(len(backups), 1)
+            with open(os.path.join(folder, backups[0]), "rb") as f:
+                self.assertEqual(f.read(), corrupt)
+            with open(path, "r", encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["refresh_interval_sec"], 300)
+            self.assertEqual(widget.CONFIG_HEALTH["status"], "recovered")
 
     def test_recovery_aborts_when_backup_fails(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "config.json")
+        with config_sandbox() as (_folder, path, _log):
             corrupt = b"{broken"
             with open(path, "wb") as f:
                 f.write(corrupt)
@@ -168,10 +167,8 @@ class TestConfig(WidgetTestCase):
                 "recovery_required": True,
                 "backup_path": None,
             }
-            with (
-                mock.patch.object(widget, "CONFIG_PATH", path),
-                mock.patch.object(widget.shutil, "copy2", side_effect=OSError("no backup")),
-            ):
+            with mock.patch.object(
+                    widget.shutil, "copy2", side_effect=OSError("no backup")):
                 self.assertFalse(
                     widget.save_config(widget.DEFAULT_CONFIG, allow_recovery=True))
             with open(path, "rb") as f:
@@ -179,45 +176,42 @@ class TestConfig(WidgetTestCase):
             self.assertEqual(widget.CONFIG_HEALTH["status"], "backup_failed")
 
     def test_unwritable_target_returns_false_and_logs(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "missing", "config.json")
-            log_path = os.path.join(folder, "widget-error.log")
+        with config_sandbox() as (folder, _path, log_path):
             widget.CONFIG_HEALTH = healthy_config_state()
-            with (
-                mock.patch.object(widget, "CONFIG_PATH", path),
-                mock.patch.object(widget, "ERROR_LOG_PATH", log_path),
-            ):
+            missing = os.path.join(folder, "missing", "config.json")
+            with mock.patch.object(widget, "CONFIG_PATH", missing):
                 self.assertFalse(widget.save_config(widget.DEFAULT_CONFIG))
             self.assertEqual(widget.CONFIG_HEALTH["status"], "write_failed")
             with open(log_path, "r", encoding="utf-8") as f:
                 self.assertIn("config write failed", f.read())
 
-    def test_config_for_ui_redacts_key_without_mutating_cfg(self):
+    def test_config_for_ui_omits_openrouter_without_mutating_cfg(self):
         widget.CFG = widget.normalize_config({
             "openrouter": {"api_key": "super-secret"},
         })
         safe = widget.config_for_ui()
-        self.assertEqual(safe["openrouter"]["api_key"], widget.REDACTED)
+        # The section is dropped, not masked: a mask still tells the page
+        # whether a key exists.
+        self.assertNotIn("openrouter", safe)
+        self.assertNotIn("super-secret", json.dumps(safe))
         self.assertEqual(widget.CFG["openrouter"]["api_key"], "super-secret")
 
     def test_save_api_never_writes_redacted_placeholder(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "config.json")
+        with config_sandbox() as (_folder, path, _log):
             widget.CFG = widget.normalize_config({
                 "openrouter": {"api_key": "super-secret"},
             })
             widget.CONFIG_HEALTH = healthy_config_state()
             widget.STATE = widget.State()
-            with mock.patch.object(widget, "CONFIG_PATH", path):
-                result = widget.JsApi().save_config_api({
-                    "language": "ru",
-                    "openrouter": {"api_key": widget.REDACTED},
-                })
+            result = widget.JsApi().save_config_api({
+                "language": "ru",
+                "openrouter": {"api_key": widget.REDACTED},
+            })
             self.assertTrue(result["ok"])
             with open(path, "r", encoding="utf-8") as f:
                 saved = json.load(f)
             self.assertEqual(saved["openrouter"]["api_key"], "super-secret")
-            self.assertEqual(result["config"]["openrouter"]["api_key"], widget.REDACTED)
+            self.assertNotIn("openrouter", result["config"])
 
     def test_failed_save_does_not_update_cfg(self):
         widget.CFG = widget.normalize_config({"language": "en"})
@@ -242,12 +236,12 @@ class TestNormalization(unittest.TestCase):
     def test_make_window_clamps_and_derives_remaining(self):
         high = widget.make_window("week", "week", used_pct=130)
         low = widget.make_window("week", "week", used_pct=-4)
-        dollars = widget.make_window(
-            "balance", "balance", used_usd=25, limit_usd=100)
+        blank = widget.make_window("week", "week")
         self.assertEqual(high["used_pct"], 100)
         self.assertEqual(high["remaining_pct"], 0)
         self.assertEqual(low["used_pct"], 0)
-        self.assertEqual(dollars["remaining_pct"], 75)
+        self.assertEqual(low["remaining_pct"], 100)
+        self.assertIsNone(blank["remaining_pct"])
 
     def test_tooltip_prefers_week_then_session_then_first(self):
         session = {"id": "session"}
@@ -383,6 +377,54 @@ class TestPolling(WidgetTestCase):
         self.assertEqual(error, {"code": "internal_error"})
 
 
+class TestProviderPayloads(unittest.TestCase):
+    def test_every_provider_result_carries_a_name_and_kind(self):
+        for provider_id in widget.PROVIDER_INFO:
+            result = widget.provider_result(provider_id)
+            self.assertEqual(result["id"], provider_id)
+            self.assertTrue(result["name"])
+            self.assertIn(result["kind"], ("windows", "balance"))
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["windows"], [])
+
+    def test_internal_failure_keeps_the_display_name_and_kind(self):
+        """A crashed fetcher must not retitle the card from "Claude Code" to "claude"."""
+        widget_state = widget.STATE
+        widget.STATE = widget.State()
+        try:
+            with (
+                mock.patch.object(
+                    widget, "fetch_claude", side_effect=RuntimeError("boom")),
+                mock.patch.object(
+                    widget, "fetch_codex",
+                    return_value=widget.provider_result("codex")),
+                mock.patch.object(
+                    widget, "fetch_openrouter",
+                    return_value=widget.provider_result("openrouter")),
+                mock.patch.object(widget, "process_reset_alerts"),
+                mock.patch.object(widget, "_log_failure"),
+                mock.patch.object(widget.TRAY, "update_tooltip"),
+            ):
+                widget.refresh_all()
+            failed = widget.STATE.snapshot["providers"]["claude"]
+        finally:
+            widget.STATE = widget_state
+        self.assertEqual(failed["name"], "Claude Code")
+        self.assertEqual(failed["kind"], "windows")
+
+    def test_resolve_resets_flags_only_derived_timestamps(self):
+        absolute, derived = widget._resolve_resets({"resets_at": 1_790_000_000})
+        self.assertEqual(absolute, 1_790_000_000)
+        self.assertFalse(derived)
+        # Both spellings of the relative form must be honoured; a value derived
+        # from now() moves with the clock and has to be flagged for resetwatch.
+        for key in ("resets_in_seconds", "reset_after_seconds"):
+            value, flag = widget._resolve_resets({key: 60})
+            self.assertTrue(flag, key)
+            self.assertAlmostEqual(value, time.time() + 60, delta=5)
+        self.assertEqual(widget._resolve_resets({}), (None, False))
+
+
 class TestAlertLocalization(WidgetTestCase):
     def test_alert_api_exposes_current_supported_language(self):
         widget.CFG = widget.normalize_config({"language": "ru"})
@@ -392,6 +434,20 @@ class TestAlertLocalization(WidgetTestCase):
             widget.AlertApi().get_language(),
             widget.DEFAULT_CONFIG["language"],
         )
+
+    def test_native_text_covers_every_key_in_both_languages(self):
+        english = widget.NATIVE_TEXT["en"]
+        for language, table in widget.NATIVE_TEXT.items():
+            self.assertEqual(
+                set(table), set(english), "%s table differs" % language)
+        self.assertEqual(set(widget.NATIVE_TEXT), set(widget.SUPPORTED_LANGUAGES))
+
+    def test_native_text_follows_the_configured_language(self):
+        widget.CFG = widget.normalize_config({"language": "ru"})
+        self.assertEqual(widget.native_text("tray_exit"), "Выход")
+        self.assertIn("2", widget.native_text("toast_many", count=2))
+        widget.CFG["language"] = "unsupported"
+        self.assertEqual(widget.native_text("tray_exit"), "Exit")
 
 
 class TestCli(unittest.TestCase):

@@ -58,6 +58,10 @@ HOME = os.path.expanduser("~")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 ERROR_LOG_PATH = os.path.join(DATA_DIR, "widget-error.log")
 
+SUPPORTED_LANGUAGES = ("en", "ru")
+REFRESH_MIN_SEC = 15
+REFRESH_MAX_SEC = 600
+
 DEFAULT_CONFIG = {
     "refresh_interval_sec": 300,
     "reset_alert": {
@@ -82,6 +86,53 @@ _CONFIG_LOCK = threading.Lock()
 # ----------------------------------------------------------------------------
 # helpers
 # ----------------------------------------------------------------------------
+
+
+# Strings drawn by Windows itself: the tray menu and tooltip, the toast, and
+# the alert window's title bar. None of these can reach ui.html's L10N table,
+# so they need their own. Anything rendered *inside* a WebView belongs in
+# L10N, not here -- see the error_info/terr split.
+NATIVE_TEXT = {
+    "en": {
+        "tray_show": "Show",
+        "tray_refresh": "Refresh",
+        "tray_exit": "Exit",
+        "tooltip_resets_in": "resets in",
+        "unit_hour": "h",
+        "unit_minute": "m",
+        "alert_title": "Quota reset",
+        "toast_one": "%(provider)s: weekly quota reset",
+        "toast_many": "%(count)d weekly quotas reset",
+    },
+    "ru": {
+        "tray_show": "Показать",
+        "tray_refresh": "Обновить",
+        "tray_exit": "Выход",
+        "tooltip_resets_in": "сброс",
+        "unit_hour": "ч",
+        "unit_minute": "м",
+        "alert_title": "Сброс квоты",
+        "toast_one": "%(provider)s: недельная квота сброшена",
+        "toast_many": "Сброшено недельных квот: %(count)d",
+    },
+}
+
+
+def current_language():
+    """Return the configured language, or the default if it is unrecognized.
+
+    CFG is normalized on load, but it is also mutated in place (settings save,
+    tests), so every native-surface consumer validates here rather than
+    trusting the raw value.
+    """
+    language = CFG.get("language", DEFAULT_CONFIG["language"])
+    return language if language in SUPPORTED_LANGUAGES else DEFAULT_CONFIG["language"]
+
+
+def native_text(key, **params):
+    """Look up a string for a native Windows surface."""
+    text = NATIVE_TEXT[current_language()].get(key) or NATIVE_TEXT["en"][key]
+    return text % params if params else text
 
 
 def error_info(code, params=None, detail=None):
@@ -126,16 +177,37 @@ def _number(value, default, minimum=None, maximum=None, integer=False):
     return int(result) if integer else result
 
 
+def _bool(value, default):
+    """Return the value only when it is a real bool, else the default.
+
+    A hand-edited "yes" or 1 is not a boolean and must not be accepted as one.
+    """
+    return value if isinstance(value, bool) else default
+
+
+def _set_health(status, error=None, recovery_required=False, backup_path=None):
+    """Replace the config health record; every field is rewritten every time."""
+    global CONFIG_HEALTH
+    CONFIG_HEALTH = {
+        "status": status,
+        "error": error,
+        "recovery_required": recovery_required,
+        "backup_path": backup_path,
+    }
+
+
 def normalize_config(value):
     """Merge and validate supported configuration values."""
     source = value if isinstance(value, dict) else {}
     cfg = copy.deepcopy(DEFAULT_CONFIG)
-    cfg["language"] = source.get("language") if source.get("language") in ("en", "ru") else "en"
+    language = source.get("language")
+    cfg["language"] = (
+        language if language in SUPPORTED_LANGUAGES else DEFAULT_CONFIG["language"])
     cfg["refresh_interval_sec"] = _number(
         source.get("refresh_interval_sec"),
         DEFAULT_CONFIG["refresh_interval_sec"],
-        15,
-        600,
+        REFRESH_MIN_SEC,
+        REFRESH_MAX_SEC,
         integer=True,
     )
 
@@ -157,19 +229,13 @@ def normalize_config(value):
     for key in ("x", "y"):
         raw = source_window.get(key)
         cfg["window"][key] = None if raw is None else _number(raw, None, integer=True)
-    cfg["window"]["on_top"] = (
-        source_window.get("on_top")
-        if isinstance(source_window.get("on_top"), bool)
-        else DEFAULT_CONFIG["window"]["on_top"]
-    )
+    cfg["window"]["on_top"] = _bool(
+        source_window.get("on_top"), DEFAULT_CONFIG["window"]["on_top"])
 
     source_alert = (
         source.get("reset_alert") if isinstance(source.get("reset_alert"), dict) else {})
-    cfg["reset_alert"]["enabled"] = (
-        source_alert.get("enabled")
-        if isinstance(source_alert.get("enabled"), bool)
-        else DEFAULT_CONFIG["reset_alert"]["enabled"]
-    )
+    cfg["reset_alert"]["enabled"] = _bool(
+        source_alert.get("enabled"), DEFAULT_CONFIG["reset_alert"]["enabled"])
     cfg["reset_alert"]["pct_jump_threshold"] = _number(
         source_alert.get("pct_jump_threshold"),
         DEFAULT_CONFIG["reset_alert"]["pct_jump_threshold"],
@@ -192,14 +258,8 @@ def normalize_config(value):
 
 def load_config():
     """Load config safely, retaining a corrupt file for explicit recovery."""
-    global CONFIG_HEALTH
     if not os.path.exists(CONFIG_PATH):
-        CONFIG_HEALTH = {
-            "status": "missing",
-            "error": None,
-            "recovery_required": False,
-            "backup_path": None,
-        }
+        _set_health("missing")
         return copy.deepcopy(DEFAULT_CONFIG)
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -208,19 +268,13 @@ def load_config():
             raise ValueError("configuration root must be an object")
     except Exception as exc:
         _log_failure("config load", exc)
-        CONFIG_HEALTH = {
-            "status": "corrupt",
-            "error": error_info("config_corrupt", detail=exc),
-            "recovery_required": True,
-            "backup_path": None,
-        }
+        _set_health(
+            "corrupt",
+            error_info("config_corrupt", detail=exc),
+            recovery_required=True,
+        )
         return copy.deepcopy(DEFAULT_CONFIG)
-    CONFIG_HEALTH = {
-        "status": "ok",
-        "error": None,
-        "recovery_required": False,
-        "backup_path": None,
-    }
+    _set_health("ok")
     return normalize_config(user)
 
 
@@ -238,7 +292,6 @@ def _backup_corrupt_config():
 
 def save_config(cfg, allow_recovery=False):
     """Atomically persist config and return True only after replacement succeeds."""
-    global CONFIG_HEALTH
     payload = normalize_config(cfg)
     with _CONFIG_LOCK:
         recovering = CONFIG_HEALTH.get("recovery_required", False)
@@ -251,47 +304,27 @@ def save_config(cfg, allow_recovery=False):
         if recovering and os.path.exists(CONFIG_PATH):
             backup_path, backup_error = _backup_corrupt_config()
             if backup_error:
-                CONFIG_HEALTH = {
-                    "status": "backup_failed",
-                    "error": error_info("config_backup_failed", detail=backup_error),
-                    "recovery_required": True,
-                    "backup_path": None,
-                }
+                _set_health(
+                    "backup_failed",
+                    error_info("config_backup_failed", detail=backup_error),
+                    recovery_required=True,
+                )
                 return False
 
-        folder = os.path.dirname(os.path.abspath(CONFIG_PATH)) or "."
-        tmp = None
         try:
-            fd, tmp = tempfile.mkstemp(
-                dir=folder, prefix=".config-", suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, CONFIG_PATH)
-            tmp = None
+            resetwatch.atomic_write_json(CONFIG_PATH, payload)
         except Exception as exc:
             _log_failure("config write", exc)
-            CONFIG_HEALTH = {
-                "status": "write_failed",
-                "error": error_info("config_write_failed", detail=exc),
-                "recovery_required": recovering,
-                "backup_path": backup_path,
-            }
+            _set_health(
+                "write_failed",
+                error_info("config_write_failed", detail=exc),
+                recovery_required=recovering,
+                backup_path=backup_path,
+            )
             return False
-        finally:
-            if tmp and os.path.exists(tmp):
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
 
-        CONFIG_HEALTH = {
-            "status": "recovered" if recovering else "ok",
-            "error": None,
-            "recovery_required": False,
-            "backup_path": backup_path,
-        }
+        _set_health(
+            "recovered" if recovering else "ok", backup_path=backup_path)
         return True
 
 
@@ -300,6 +333,42 @@ def http_get_json(url, headers=None, timeout=15):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         raw = r.read().decode("utf-8", "replace")
     return json.loads(raw)
+
+
+# Display name and card style for every provider. The fetchers, the failure
+# path in refresh_all(), and the tray all build their payload from this, so a
+# rename lands everywhere at once.
+PROVIDER_INFO = {
+    "claude": ("Claude Code", "windows"),
+    "codex": ("Codex CLI", "windows"),
+    "openrouter": ("OpenRouter", "balance"),
+}
+
+
+def provider_result(provider_id):
+    """Build the empty payload every fetcher and every failure path returns."""
+    name, kind = PROVIDER_INFO[provider_id]
+    return {"id": provider_id, "name": name, "kind": kind, "ok": False,
+            "windows": [], "meta": {}, "error": None}
+
+
+def request_provider_json(url, headers, service, auth_code):
+    """GET provider JSON, mapping any failure to a localizable error payload.
+
+    Returns ``(data, None)`` on success or ``(None, error_info)`` on failure.
+    A 401/403 gets the provider's own auth code so the UI knows to offer the
+    re-login button; everything else falls back to the shared HTTP codes.
+    """
+    try:
+        return http_get_json(url, headers), None
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return None, error_info(auth_code, params={"status": exc.code})
+        return None, error_info(
+            "api_http_error", params={"service": service, "status": exc.code})
+    except Exception as exc:
+        return None, error_info(
+            "api_request_failed", params={"service": service}, detail=exc)
 
 
 def iso_to_epoch(value):
@@ -347,11 +416,13 @@ def tooltip_window(p):
             or (ws[0] if ws else None))
 
 
-def make_window(win_id, label, used_pct=None, resets_at=None,
-                used_usd=None, limit_usd=None, extra=None):
-    """Build a normalized quota window."""
-    if used_pct is None and used_usd is not None and limit_usd:
-        used_pct = 100.0 * float(used_usd) / float(limit_usd)
+def make_window(win_id, label, used_pct=None, resets_at=None, extra=None):
+    """Build a normalized quota window.
+
+    Percentage windows only. Dollar figures reach the UI through
+    ``meta.balance`` instead, because OpenRouter reports a single account
+    balance rather than a windowed quota.
+    """
     if used_pct is not None:
         used_pct = max(0.0, min(100.0, float(used_pct)))
     return {
@@ -360,8 +431,6 @@ def make_window(win_id, label, used_pct=None, resets_at=None,
         "used_pct": used_pct,
         "remaining_pct": None if used_pct is None else round(100.0 - used_pct, 2),
         "resets_at": resets_at,          # Epoch seconds or None.
-        "used_usd": used_usd,
-        "limit_usd": limit_usd,
         "extra": extra or {},
     }
 
@@ -417,8 +486,7 @@ def read_claude_credentials(paths=None):
 
 
 def fetch_claude():
-    result = {"id": "claude", "name": "Claude Code", "kind": "windows", "ok": False,
-              "windows": [], "meta": {}, "error": None}
+    result = provider_result("claude")
     credentials, credential_error = read_claude_credentials()
     if not credentials:
         result["error"] = credential_error
@@ -438,22 +506,10 @@ def fetch_claude():
     }
     data, last_err = None, None
     for url in CLAUDE_USAGE_URLS:
-        try:
-            data = http_get_json(url, headers)
+        data, last_err = request_provider_json(
+            url, headers, "Claude", "claude_auth_expired")
+        if data is not None:
             break
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                last_err = error_info(
-                    "claude_auth_expired", params={"status": e.code})
-            else:
-                last_err = error_info(
-                    "api_http_error",
-                    params={"service": "Claude", "status": e.code},
-                    detail=url,
-                )
-        except Exception as e:
-            last_err = error_info(
-                "api_request_failed", params={"service": "Claude"}, detail=e)
     if data is None:
         result["error"] = last_err or error_info(
             "api_no_response", params={"service": "Claude"})
@@ -544,9 +600,28 @@ def read_codex_credentials(auth_path=None):
     }, None
 
 
+def _resolve_resets(obj):
+    """Return ``(resets_at, derived)`` for one rate-limit object.
+
+    Some responses carry only a relative duration. A timestamp computed from
+    now() moves with the system clock, so it is flagged: resetwatch disables
+    boundary-movement detection for those and relies on the balance signal
+    alone. See resetwatch's module docstring.
+    """
+    resets = iso_to_epoch(pick(obj, "resets_at", "reset_at", "reset_time"))
+    if resets is not None:
+        return resets, False
+    secs = pick(obj, "resets_in_seconds", "reset_after_seconds")
+    if secs is None:
+        return None, False
+    try:
+        return time.time() + float(secs), True
+    except (TypeError, ValueError):
+        return None, False
+
+
 def fetch_codex():
-    result = {"id": "codex", "name": "Codex CLI", "kind": "windows", "ok": False,
-              "windows": [], "meta": {}, "error": None}
+    result = provider_result("codex")
     credentials, credential_error = read_codex_credentials()
     if not credentials:
         result["error"] = credential_error
@@ -566,20 +641,12 @@ def fetch_codex():
     if account_id:
         headers["chatgpt-account-id"] = account_id
 
-    try:
-        data = http_get_json("https://chatgpt.com/backend-api/wham/usage", headers)
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            result["error"] = error_info(
-                "codex_auth_expired", params={"status": e.code})
-        else:
-            result["error"] = error_info(
-                "api_http_error",
-                params={"service": "Codex", "status": e.code})
-        return result
-    except Exception as e:
-        result["error"] = error_info(
-            "api_request_failed", params={"service": "Codex"}, detail=e)
+    data, request_error = request_provider_json(
+        "https://chatgpt.com/backend-api/wham/usage", headers,
+        "Codex", "codex_auth_expired")
+    if not isinstance(data, dict):
+        result["error"] = request_error or error_info(
+            "api_format_unrecognized", params={"service": "Codex"})
         return result
 
     if isinstance(data.get("plan_type"), str):
@@ -591,16 +658,7 @@ def fetch_codex():
         if not isinstance(obj, dict):
             return
         pct = pick(obj, "used_percent", "usage_percent", "utilization")
-        resets = iso_to_epoch(pick(obj, "resets_at", "reset_at", "reset_time"))
-        # No absolute timestamp is available, so derive one from the current
-        # time and mark it as such. It depends on the system clock, and
-        # resetwatch must not mistake its movement for a quota reset.
-        derived = False
-        if resets is None:
-            secs = pick(obj, "resets_in_seconds", "reset_after_seconds")
-            if secs is not None:
-                resets = time.time() + float(secs)
-                derived = True
+        resets, derived = _resolve_resets(obj)
         # The window duration helps determine the label; it may be in minutes
         # or seconds (limit_window_seconds).
         mins = pick(obj, "window_minutes", "limit_window_minutes")
@@ -630,11 +688,7 @@ def fetch_codex():
         title = item.get("title") or item.get("id") or "Extra limit %d" % (i + 1)
         obj = item.get("window") or item.get("rate_limit") or item
         pct = pick(obj, "used_percent", "usage_percent")
-        resets = iso_to_epoch(pick(obj, "resets_at"))
-        derived = False
-        if resets is None and obj.get("resets_in_seconds") is not None:
-            resets = time.time() + float(obj["resets_in_seconds"])
-            derived = True
+        resets, derived = _resolve_resets(obj)
         if pct is not None:
             result["windows"].append(make_window(
                 f"extra_{i}", str(title), used_pct=pct, resets_at=resets,
@@ -669,8 +723,7 @@ def _openrouter_key():
 
 
 def fetch_openrouter():
-    result = {"id": "openrouter", "name": "OpenRouter", "kind": "balance",
-              "ok": False, "windows": [], "meta": {}, "error": None}
+    result = provider_result("openrouter")
     key, source = _openrouter_key()
     result["meta"]["key_source"] = source
     if not key:
@@ -682,34 +735,19 @@ def fetch_openrouter():
         "Accept": "application/json",
         "User-Agent": "ai-usage-widget/1.0",
     }
-    try:
-        data = http_get_json(OPENROUTER_CREDITS_URL, headers) or {}
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            result["error"] = error_info(
-                "openrouter_key_rejected", params={"status": e.code})
-        else:
-            result["error"] = error_info(
-                "api_http_error",
-                params={"service": "OpenRouter", "status": e.code})
-        return result
-    except Exception as e:
-        result["error"] = error_info(
-            "api_request_failed", params={"service": "OpenRouter"}, detail=e)
+    data, request_error = request_provider_json(
+        OPENROUTER_CREDITS_URL, headers, "OpenRouter", "openrouter_key_rejected")
+    if not isinstance(data, dict):
+        result["error"] = request_error or error_info(
+            "api_format_unrecognized", params={"service": "OpenRouter"})
         return result
 
+    # A missing field arrives as None, and float(None) raises TypeError, so
+    # this one guard covers both absent and nonnumeric values.
     credits = data.get("data") or {}
-    total = pick(credits, "total_credits")
-    used = pick(credits, "total_usage")
-    if total is None or used is None:
-        result["error"] = error_info(
-            "api_limits_missing", params={"service": "OpenRouter"})
-        return result
-
-    # API format changes may make total/used nonnumeric; do not crash the widget.
     try:
-        total = float(total)
-        used = float(used)
+        total = float(pick(credits, "total_credits"))
+        used = float(pick(credits, "total_usage"))
     except (TypeError, ValueError):
         result["error"] = error_info(
             "api_limits_missing", params={"service": "OpenRouter"})
@@ -821,10 +859,9 @@ def shutdown_app():
         persist_window_geometry(win)
         win.destroy()
     except Exception:
-        # Retain enough state to make the emergency path graceful before the
-        # final hard-exit fallback.
-        if win is not None:
-            persist_window_geometry(win)
+        # Geometry is either already saved by the call above or unreachable
+        # because there is no window, so there is nothing left to persist --
+        # drop the tray and hard-exit rather than hang with no way out.
         TRAY.stop()
         os._exit(0)
 
@@ -863,10 +900,9 @@ class TrayManager:
         if not snap.get("updated_at"):
             return "AI Usage Widget"
 
-        lang = (CFG.get("language") or "en")[:2]
-        hu = "h" if lang == "en" else "ч"
-        mu = "m" if lang == "en" else "м"
-        reset_label = "resets in" if lang == "en" else "сброс"
+        hu = native_text("unit_hour")
+        mu = native_text("unit_minute")
+        reset_label = native_text("tooltip_resets_in")
 
         lines = ["AI Usage Widget"]
         for pid, pname in [("claude", "Claude"), ("codex", "Codex")]:
@@ -906,17 +942,11 @@ class TrayManager:
         self.window_ref = window
         if self.icon is not None:
             return
-        lang = (CFG.get("language") or "en")[:2]
-        labels = {
-            "show": "Show" if lang == "en" else "Показать",
-            "refresh": "Refresh" if lang == "en" else "Обновить",
-            "exit": "Exit" if lang == "en" else "Выход",
-        }
         menu = pystray.Menu(
-            pystray.MenuItem(labels["show"], self._on_show, default=True),
-            pystray.MenuItem(labels["refresh"], self._on_refresh),
+            pystray.MenuItem(native_text("tray_show"), self._on_show, default=True),
+            pystray.MenuItem(native_text("tray_refresh"), self._on_refresh),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(labels["exit"], self._on_quit),
+            pystray.MenuItem(native_text("tray_exit"), self._on_quit),
         )
         self.icon = pystray.Icon(
             "ai-usage", self._load_icon_image(), self._build_tooltip(), menu)
@@ -967,11 +997,16 @@ TRAY = TrayManager()
 
 
 class AlertApi:
-    """Expose the alert window API."""
+    """Expose the alert window API.
+
+    Both dismiss methods call close_if_empty() only AFTER releasing
+    ALERTS_LOCK. close_if_empty acquires the window's own lock, and there is no
+    need to impose a shared nesting order on every caller when the two locks
+    can simply never be held together.
+    """
 
     def get_language(self):
-        language = CFG.get("language", DEFAULT_CONFIG["language"])
-        return language if language in ("en", "ru") else DEFAULT_CONFIG["language"]
+        return current_language()
 
     def get_alerts(self):
         with ALERTS_LOCK:
@@ -981,9 +1016,6 @@ class AlertApi:
         with ALERTS_LOCK:
             ALERTS.dismiss(alert_id)
             ALERTS.save()
-        # Call this AFTER releasing ALERTS_LOCK. close_if_empty acquires its own
-        # self.lock, and there is no need to impose a shared nesting order on
-        # all callers when the two locks can simply never be held together.
         ALERT_WINDOW.close_if_empty()
         return True
 
@@ -1046,10 +1078,8 @@ class AlertWindowManager:
             # forgotten.
             marker = len(webview.windows)
             try:
-                language = CFG.get("language", DEFAULT_CONFIG["language"])
-                title = "Сброс квоты" if language == "ru" else "Quota reset"
                 self.window = webview.create_window(
-                    title,
+                    native_text("alert_title"),
                     url=os.path.join(APP_DIR, "alert.html"),
                     js_api=AlertApi(),
                     width=self.WIDTH, height=height, x=x, y=y,
@@ -1087,21 +1117,12 @@ class AlertWindowManager:
         icon = TRAY.icon
         if icon is None:
             return
-        names = {"claude": "Claude Code", "codex": "Codex CLI"}
-        language = CFG.get("language", DEFAULT_CONFIG["language"])
         if len(events) == 1:
-            provider = names.get(events[0]["provider"], events[0]["provider"])
-            body = (
-                "%s: недельная квота сброшена" % provider
-                if language == "ru"
-                else "%s: weekly quota reset" % provider
-            )
+            provider_id = events[0]["provider"]
+            name, _kind = PROVIDER_INFO.get(provider_id, (provider_id, "windows"))
+            body = native_text("toast_one", provider=name)
         else:
-            body = (
-                "Сброшено недельных квот: %d" % len(events)
-                if language == "ru"
-                else "%d weekly quotas reset" % len(events)
-            )
+            body = native_text("toast_many", count=len(events))
         try:
             icon.notify(body, "AI Usage Widget")
         except Exception:
@@ -1171,15 +1192,17 @@ def refresh_all():
                     providers[name] = future.result()
                 except Exception as exc:
                     _log_failure("%s refresh" % name, exc)
-                    providers[name] = {"id": name, "name": name, "ok": False,
-                                       "windows": [], "meta": {},
-                                       "error": error_info("internal_error")}
+                    failed = provider_result(name)
+                    failed["error"] = error_info("internal_error")
+                    providers[name] = failed
         with STATE.lock:
             STATE.snapshot = {"updated_at": time.time(), "providers": providers}
         try:
             process_reset_alerts(providers)
-        except Exception:
-            pass
+        except Exception as exc:
+            # The widget runs under pythonw with no console, so an unlogged
+            # failure here is indistinguishable from "no resets happened".
+            _log_failure("reset alerts", exc)
         TRAY.update_tooltip()
     finally:
         STATE.refresh_lock.release()
@@ -1188,11 +1211,14 @@ def refresh_all():
 def poll_delay(cfg=None):
     """Return a guarded polling delay for loaded or hand-edited config."""
     source = CFG if cfg is None else cfg
-    try:
-        value = source.get("refresh_interval_sec", 300)
-    except Exception:
-        value = 300
-    return _number(value, 300, 15, 600, integer=True)
+    default = DEFAULT_CONFIG["refresh_interval_sec"]
+    return _number(
+        source.get("refresh_interval_sec", default),
+        default,
+        REFRESH_MIN_SEC,
+        REFRESH_MAX_SEC,
+        integer=True,
+    )
 
 
 def refresh_loop():
@@ -1220,15 +1246,15 @@ REDACTED = "***"
 def config_for_ui(cfg=None):
     """Return the secret-free config subset sent to the WebView.
 
-    A user may put the OpenRouter key in config.json. Without this cleanup, it
-    would be sent in plaintext to the JavaScript context on every poll (every
-    five seconds). The page does not need it; settings neither read nor display
-    the key.
+    A user may put the OpenRouter key in config.json, and this payload crosses
+    into the JavaScript context on every poll. Nothing in ui.html reads the
+    openrouter section -- the settings form does not include it, and the
+    connector row reads meta.key_source off the provider snapshot instead -- so
+    the whole section is dropped rather than masked. Masking would still tell
+    the page whether a key exists.
     """
     safe = copy.deepcopy(CFG if cfg is None else cfg)
-    section = safe.get("openrouter")
-    if isinstance(section, dict) and section.get("api_key"):
-        section["api_key"] = REDACTED
+    safe.pop("openrouter", None)
     return safe
 
 
@@ -1240,14 +1266,20 @@ def config_health_for_ui():
     return health
 
 
+TOKEN_PROVIDERS = ("claude", "codex")
+
+
 def token_status_from_snapshot(providers, current_time=None):
-    """Derive display status from cached, secret-free expiry metadata."""
+    """Derive display status from cached, secret-free expiry metadata.
+
+    ``meta.token_expires_at`` is written by the credential readers, which
+    already return epoch seconds or None, so no conversion happens here.
+    """
     now_value = time.time() if current_time is None else current_time
-    result = {"claude": None, "codex": None}
-    for provider_id in result:
+    result = dict.fromkeys(TOKEN_PROVIDERS)
+    for provider_id in TOKEN_PROVIDERS:
         provider = (providers or {}).get(provider_id) or {}
-        expiry = ((provider.get("meta") or {}).get("token_expires_at"))
-        expiry = iso_to_epoch(expiry)
+        expiry = (provider.get("meta") or {}).get("token_expires_at")
         if expiry is None:
             continue
         remaining = expiry - now_value
@@ -1323,13 +1355,10 @@ class JsApi:
         with STATE.lock:
             snap = copy.deepcopy(STATE.snapshot)
         snap["now"] = time.time()
-        snap["refresh_interval_sec"] = CFG.get("refresh_interval_sec", 300)
+        snap["refresh_interval_sec"] = CFG["refresh_interval_sec"]
         snap["token_status"] = token_status_from_snapshot(
             snap.get("providers"), snap["now"])
-        try:
-            snap["on_top"] = CFG["window"].get("on_top", True)
-        except Exception:
-            snap["on_top"] = True
+        snap["on_top"] = CFG["window"]["on_top"]
         snap["_config"] = config_for_ui()
         snap["config_health"] = config_health_for_ui()
         with ALERTS_LOCK:
@@ -1350,13 +1379,13 @@ class JsApi:
 
     def toggle_on_top(self):
         global CFG
-        new_val = not CFG["window"].get("on_top", True)
+        new_val = not CFG["window"]["on_top"]
         candidate = copy.deepcopy(CFG)
         candidate["window"]["on_top"] = new_val
         if not save_config(candidate):
             return {
                 "ok": False,
-                "value": CFG["window"].get("on_top", True),
+                "value": CFG["window"]["on_top"],
                 "error": CONFIG_HEALTH.get("error") or error_info(
                     "config_write_failed"),
             }
@@ -1380,11 +1409,12 @@ class JsApi:
         if not isinstance(cfg, dict):
             return {"ok": False, "error": error_info("config_invalid")}
         try:
-            old_lang = CFG.get("language", "en")
+            old_lang = CFG["language"]
             update = copy.deepcopy(cfg)
-            # Settings do not edit the OpenRouter key. If a redacted value ever
-            # comes back (see config_for_ui), writing that placeholder to
-            # config.json would erase the real key.
+            # config_for_ui no longer sends the openrouter section at all, so
+            # nothing should echo the placeholder back. Keep the guard anyway:
+            # writing "***" over a real key is unrecoverable, and this payload
+            # comes from a page that could be edited or replayed.
             section = update.get("openrouter")
             if isinstance(section, dict) and section.get("api_key") == REDACTED:
                 section = dict(section)
@@ -1405,20 +1435,19 @@ class JsApi:
                 }
             CFG = candidate
             STATE.refresh_wake_event.set()
-            # Apply window settings.
             try:
                 win = STATE.main_window or webview.windows[0]
                 w = CFG["window"]
-                win.on_top = w.get("on_top", True)
-                win.resize(w.get("width", 380), w.get("height", 400))
+                win.on_top = w["on_top"]
+                win.resize(w["width"], w["height"])
             except Exception as exc:
                 _log_failure("window settings apply", exc)
-            # Update the tray when the language changes.
-            if CFG.get("language", "en") != old_lang:
+            # The tray menu and tooltip are built once per language.
+            if CFG["language"] != old_lang:
                 TRAY.update_tooltip()
             return {
                 "ok": True,
-                "config": config_for_ui(CFG),
+                "config": config_for_ui(),
                 "config_health": config_health_for_ui(),
             }
         except Exception as exc:
@@ -1454,18 +1483,20 @@ def main():
         print("pywebview is not installed. Run install.bat first.")
         sys.exit(1)
 
+    # normalize_config guarantees every key here, so index directly rather than
+    # restating defaults that would silently diverge from DEFAULT_CONFIG.
     w = CFG["window"]
     window = webview.create_window(
         "AI Usage",
         url=os.path.join(APP_DIR, "ui.html"),
         js_api=JsApi(),
-        width=w.get("width", 380),
-        height=w.get("height", 400),
-        x=w.get("x"),
-        y=w.get("y"),
+        width=w["width"],
+        height=w["height"],
+        x=w["x"],
+        y=w["y"],
         frameless=True,
         easy_drag=False,
-        on_top=w.get("on_top", True),
+        on_top=w["on_top"],
         resizable=True,
         background_color="#101012",
     )
@@ -1484,7 +1515,7 @@ def main():
     def _fix_initial_size():
         global _INITIAL_SIZE_OK
         try:
-            window.resize(w.get("width", 380), w.get("height", 400))
+            window.resize(w["width"], w["height"])
             _INITIAL_SIZE_OK = True
         except Exception:
             pass
@@ -1495,7 +1526,6 @@ def main():
     if os.path.exists(icon_path):
         try:
             import ctypes
-            from ctypes import wintypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ai.usage.widget")
             hwnd = window.native
             if hwnd:

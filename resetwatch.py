@@ -23,6 +23,34 @@ DEFAULT_PCT_JUMP = 10.0
 DEFAULT_RESETS_ADVANCE_SEC = 3600
 
 
+def atomic_write_json(path, payload):
+    """Write JSON so an interrupted write cannot leave a half-written file.
+
+    The payload goes to a temporary file in the target's own directory (so the
+    rename stays on one filesystem), is flushed and fsynced, and only then
+    replaces the target. ``os.replace`` is atomic on Windows and POSIX alike.
+
+    Raises on failure. Callers decide how to report it -- config writes drive
+    the settings health banner, alert-state writes drive ``last_save_ok``.
+    """
+    folder = os.path.dirname(os.path.abspath(path)) or "."
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".tmp-", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp and os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
 def _week_reading(provider):
     """Return a comparable weekly-window reading, or None."""
     if not isinstance(provider, dict) or not provider.get("ok"):
@@ -157,26 +185,13 @@ class AlertStore:
         restarts is lost. Therefore the result is returned, logged, and shown
         in settings.
         """
-        payload = {"seen": self.seen, "pending": self.pending}
-        folder = os.path.dirname(os.path.abspath(self.path)) or "."
-        tmp = None
         try:
-            fd, tmp = tempfile.mkstemp(dir=folder, prefix=".reset-alert-",
-                                       suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
-            os.replace(tmp, self.path)
-            tmp = None
+            atomic_write_json(
+                self.path, {"seen": self.seen, "pending": self.pending})
         except Exception as e:
             self._log_failure(e)
             self.last_save_ok = False
             return False
-        finally:
-            if tmp and os.path.exists(tmp):
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
         self.last_save_ok = True
         return True
 

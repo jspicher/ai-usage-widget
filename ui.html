@@ -9,7 +9,7 @@
     /* Claude / Anthropic */
     --cl-bg:#F5F1E8; --cl-ink:#2A261E; --cl-dim:#8a8272; --cl-accent:#D97757; --cl-track:#e6ddcc;
     /* Codex / OpenAI */
-    --cx-bg:#0B0B0C; --cx-ink:#F2F2F2; --cx-dim:#8E8E93; --cx-track:#232326; --cx-accent:#ffffff;
+    --cx-bg:#0B0B0C; --cx-ink:#F2F2F2; --cx-dim:#8E8E93; --cx-track:#232326;
   }
   *{box-sizing:border-box; margin:0; padding:0; -webkit-user-select:none; user-select:none}
   html,body{height:100%}
@@ -18,8 +18,6 @@
     font:12px/1.45 "Segoe UI", system-ui, sans-serif;
     border:1px solid var(--shell-line); border-radius:14px;
   }
-  .serif{font-family:"Charter","Georgia","Times New Roman",serif}
-  .mono{font-family:"Cascadia Code","JetBrains Mono","Consolas",monospace}
 
   /* ---------- layout ---------- */
   #app{display:flex; flex-direction:column; height:100vh}
@@ -173,7 +171,7 @@
   .settings .field-row{display:flex; gap:10px}
   .settings .field-row .field{flex:1; min-width:0; margin-bottom:12px}
   .settings label{display:block; font-size:11px; color:#8b8b93; margin-bottom:4px}
-  .settings input[type="number"], .settings input[type="text"], .settings select{
+  .settings input[type="number"], .settings select{
     width:100%; padding:8px 10px; background:#1a1a1e; border:1px solid #2a2a2e;
     border-radius:6px; color:#ececf1; font-size:12px; box-sizing:border-box;
   }
@@ -211,7 +209,6 @@
   }
   .loading-text{font-size:11px; color:#5c5c64; letter-spacing:.05em}
   
-  @keyframes fadeIn{from{opacity:0}to{opacity:1}}
   @keyframes spin{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion: reduce){ .bar i{transition:none} }
 </style>
@@ -463,25 +460,21 @@ function showAppError(error){
 }
 
 function updateTitles(){
-  const btn = id => document.getElementById(id);
   for(const [id, key] of [
     ["btn-refresh", "refreshTitle"], ["btn-pin", "pinTitle"],
     ["btn-tray", "trayTitle"], ["btn-close", "closeTitle"],
+    ["nav-settings", "settings"],
   ]){
-    const control = btn(id);
+    const control = $("#" + id);
     if(control){
       control.title = t(key);
       control.setAttribute("aria-label", t(key));
     }
   }
-  const lt = btn("loading-text");
-  if(lt) lt.textContent = t("loadingData");
-  if(btn("nav-overview")) btn("nav-overview").textContent = t("overview");
-  const navSettings = btn("nav-settings");
-  if(navSettings){
-    navSettings.title = t("settings");
-    navSettings.setAttribute("aria-label", t("settings"));
-  }
+  const loadingText = $("#loading-text");
+  if(loadingText) loadingText.textContent = t("loadingData");
+  const overview = $("#nav-overview");
+  if(overview) overview.textContent = t("overview");
 }
 
 /* Inline OpenAI SVG logo avoids font dependence (⬡ U+2B21 rendered as tofu). */
@@ -492,11 +485,14 @@ const OPENROUTER_MARK = '<svg viewBox="0 0 24 24" fill="currentColor" role="img"
   + '<path d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>';
 const GLYPH = { claude:"✳", codex:OPENAI_MARK, openrouter:OPENROUTER_MARK };
 const THEME = { claude:"th-claude", codex:"th-codex", openrouter:"th-openrouter" };
+/* Render order for the overview, the detail pages, and the connector list. */
+const PROVIDER_IDS = ["claude","codex","openrouter"];
 
 /* ---------- utilities ---------- */
 const $ = s => document.querySelector(s);
 function esc(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function now(){ return Date.now()/1000 + clockSkew; }
+function usd(v){ return "$" + Number(v).toFixed(2); }
 
 function fmtCountdown(epoch){
   if(!epoch) return "";
@@ -537,38 +533,28 @@ function renderOverview(){
   const el = $("#page-overview");
   if(!DATA){ el.innerHTML = `<div class='empty'>${t("loading")}</div>`; return; }
   let html = "";
-  for(const id of ["claude","codex","openrouter"]){
+  for(const id of PROVIDER_IDS){
     if(!DATA.providers[id]) continue;
     const p = DATA.providers[id] || {};
-    const wins = overviewWins(p);
+    const balance = p.kind === "balance" ? ((p.meta && p.meta.balance) || null) : null;
+    const wins = p.kind === "balance" ? [] : overviewWins(p);
     const w = wins[0] || null;
-    const theme = THEME[id];
-    if(p.kind === "balance"){
-      const b = (p.meta && p.meta.balance) || null;
-      html += `<button type="button" class="strip ${theme}" data-goto="${id}" aria-label="${esc(p.name || id)}">
-        <div class="top">
-          <span class="glyph">${GLYPH[id]}</span>
-          <span class="name">${esc(p.name || id)}</span>
-          <span class="pct">${b ? "$" + b.remaining_usd.toFixed(2) : "—"}</span>
-        </div>`;
-      if(b){
-        html += `<div class="sub">
-            <span>${t("credits")} · ${t("remaining")}</span>
-            <span>${b.week_usd != null ? "$" + b.week_usd.toFixed(2) + " " + t("spentWeek") : ""}</span>
-          </div>`;
-      } else {
-        html += `<div class="err">${esc(terr(p.error) || t("noData"))}</div>`;
-      }
-      html += `</button>`;
-      continue;
-    }
-    html += `<button type="button" class="strip ${theme}" data-goto="${id}" aria-label="${esc(p.name || id)}">
+    // Both kinds share the header; only the headline figure differs.
+    const headline = p.kind === "balance"
+      ? (balance ? usd(balance.remaining_usd) : "—")
+      : (w ? pctText(w) + "<small style='font-size:11px;opacity:.5'>%</small>" : "—");
+    html += `<button type="button" class="strip ${THEME[id]}" data-goto="${id}" aria-label="${esc(p.name || id)}">
       <div class="top">
         <span class="glyph">${GLYPH[id]}</span>
         <span class="name">${esc(p.name || id)}</span>
-        <span class="pct">${w ? pctText(w) + "<small style='font-size:11px;opacity:.5'>%</small>" : "—"}</span>
+        <span class="pct">${headline}</span>
       </div>`;
-    if(wins.length){
+    if(balance){
+      html += `<div class="sub">
+          <span>${t("credits")} · ${t("remaining")}</span>
+          <span>${balance.week_usd != null ? usd(balance.week_usd) + " " + t("spentWeek") : ""}</span>
+        </div>`;
+    } else if(wins.length){
       for(const win of wins){
         const low = win.remaining_pct != null && win.remaining_pct <= 15 ? "low" : "";
         html += `<div class="sub">
@@ -600,16 +586,15 @@ function renderDetail(id){
       ${b ? `<div class="win">
           <div class="head">
             <span class="label">${t("credits")}</span>
-            <span class="bigpct">$${b.remaining_usd.toFixed(2)}</span>
+            <span class="bigpct">${usd(b.remaining_usd)}</span>
           </div>
-          <div class="usd">$${b.used_usd.toFixed(2)}${t("of")}$${b.total_usd.toFixed(2)}</div>
-          ${b.week_usd != null ? `<div class="usd">$${b.week_usd.toFixed(2)} ${t("spentWeek")}</div>` : ""}
-        </div>` : `<div class="err">${esc(terr(p.error) || t("noData"))}</div>`}
+          <div class="usd">${usd(b.used_usd)}${t("of")}${usd(b.total_usd)}</div>
+          ${b.week_usd != null ? `<div class="usd">${usd(b.week_usd)} ${t("spentWeek")}</div>` : ""}
+        </div>` : `<div class="error">${esc(terr(p.error) || t("noData"))}</div>`}
     </div>`;
     return;
   }
 
-  // Token status.
   const tokenStatus = DATA && DATA.token_status && DATA.token_status[id];
   let statusHtml = "";
   if(tokenStatus){
@@ -629,11 +614,8 @@ function renderDetail(id){
         <span class="bigpct">${pctText(w)}<small> % ${t("remaining")}</small></span>
       </div>`;
     html += `<div class="bar ${low}"><i style="width:${w.remaining_pct ?? 0}%"></i></div>`;
-    if(w.used_usd != null && w.limit_usd != null){
-      html += `<div class="usd">$${(+w.used_usd).toFixed(2)}${t("of")}$${(+w.limit_usd).toFixed(2)}</div>`;
-    }
     if(w.resets_at){
-      html += `<div class="reset" data-reset="${w.resets_at}">
+      html += `<div class="reset">
         <span>${t("resetsIn")} ${fmtCountdown(w.resets_at)}</span>
         <span>${fmtClock(w.resets_at)}</span></div>`;
     }
@@ -647,7 +629,6 @@ function renderDetail(id){
     }
   }
 
-  // Metadata.
   const metaBits = [];
   if(p.meta){
     if(p.meta.credits != null) metaBits.push(t("credits") + ": " + p.meta.credits);
@@ -690,11 +671,10 @@ function renderDetail(id){
 
 function renderAll(){
   renderOverview();
-  for(const id of ["claude","codex","openrouter"]) renderDetail(id);
+  for(const id of PROVIDER_IDS) renderDetail(id);
   renderSettings();
   if(DATA && DATA.updated_at){
     $("#updated").textContent = t("updated") + " " + fmtClock(DATA.updated_at);
-    // Hide the loading overlay.
     const loading = $("#loading");
     if(loading) loading.classList.add("hidden");
   }
@@ -717,7 +697,7 @@ function syncSettingsControls(cfg){
 function updateSettingsStatus(){
   const connectors = $("#settings-connectors");
   if(connectors){
-    connectors.innerHTML = ["claude","codex","openrouter"].map(id => {
+    connectors.innerHTML = PROVIDER_IDS.map(id => {
       const p = (DATA.providers || {})[id];
       const on = p && p.ok;
       const src = p && p.meta && p.meta.key_source;
@@ -923,18 +903,24 @@ async function pull(isManual = false){
       clockSkew = snap.now - Date.now()/1000;
       DATA = snap;
       pullInterval = (snap.refresh_interval_sec || 300) * 1000;
-      // Sync the language from config.
       const oldLang = LANG;
       if(!LANG || (DATA._config && DATA._config.language && DATA._config.language !== LANG)){
         LANG = (DATA._config && DATA._config.language) || "en";
       }
       if(oldLang !== LANG) updateTitles();
       // Reset the timer after a real data update or a manual refresh.
-      if(isManual || snap.updated_at !== lastUpdatedAt){
+      const changed = isManual || snap.updated_at !== lastUpdatedAt;
+      if(changed){
         lastPullTime = Date.now();
         lastUpdatedAt = snap.updated_at;
       }
-      renderAll();
+      // This pull runs every 5s, but the backend only refreshes every
+      // refresh_interval_sec (300s by default), so ~59 of 60 pulls would
+      // rebuild byte-identical HTML -- restarting the bar transitions and
+      // discarding the settings DOM twelve times a minute. Render only when
+      // the data or the language actually moved; the 30s timer keeps the
+      // countdowns ticking in between.
+      if(changed || oldLang !== LANG) renderAll();
       // Initialize the pin button on the first pull().
       if(!isManual && DATA && DATA.on_top !== undefined){
         const pinBtn = $("#btn-pin");
@@ -947,6 +933,7 @@ async function pull(isManual = false){
 window.addEventListener("pywebviewready", () => {
   pull();
   setInterval(() => pull(false), 5000);
+  // Redraw between backend refreshes so the "resets in" countdowns advance.
   setInterval(() => { if(DATA) renderAll(); }, 30000);
   setInterval(tickCountdown, 1000);
   updateTitles();
@@ -967,15 +954,11 @@ window.addEventListener("pywebviewready", () => {
     }
   });
   $("#btn-close").addEventListener("click", () => window.pywebview.api.close());
-  const trayBtn = $("#btn-tray");
-  if(trayBtn) {
-    trayBtn.addEventListener("click", async () => {
-      const result = await window.pywebview.api.minimize_to_tray();
-      if(!result) {
-        console.log("Tray not available");
-      }
-    });
-  }
+  $("#btn-tray").addEventListener("click", () => {
+    // Returns false when pystray is unavailable; there is no fallback to
+    // offer, so the button simply does nothing.
+    window.pywebview.api.minimize_to_tray();
+  });
   const pinBtn = $("#btn-pin");
   pinBtn.addEventListener("click", async () => {
     const result = await window.pywebview.api.toggle_on_top();
@@ -993,11 +976,14 @@ window.addEventListener("pywebviewready", () => {
       showAppError(result.error);
     }
   });
+  // Python already refreshes the tooltip after every poll; this only keeps its
+  // "resets in" countdown moving in between. The tooltip renders at minute
+  // resolution, so a minute is as often as it can change.
   setInterval(async () => {
     if(DATA) {
       await window.pywebview.api.update_tray_icon();
     }
-  }, 5000);
+  }, 60000);
 });
 
 // Demo mode when the file is opened in a browser without pywebview.
@@ -1017,7 +1003,7 @@ setTimeout(() => {
       refresh_interval_sec:300,
       window:{x:null,y:null,width:380,height:400,on_top:true},
       reset_alert:{enabled:true,pct_jump_threshold:10,resets_at_advance_sec:3600},
-      openrouter:{api_key:""},
+      /* No openrouter section: config_for_ui strips it before it crosses. */
     },
     providers: {
     claude:{id:"claude",name:"Claude Code",ok:true,meta:{subscription:"max"},windows:[
