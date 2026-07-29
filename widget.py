@@ -1230,6 +1230,24 @@ def main():
         resizable=True,
         background_color="#101012",
     )
+    # pywebview 6.2.1 winforms backend bug: create_window() sets the Form's
+    # outer Size *before* switching FormBorderStyle to None for frameless
+    # windows. .NET preserves ClientSize across that border-style change, so
+    # the outer size silently shrinks by the (soon-removed) caption/border
+    # chrome (~16px width, ~39px height at 96 DPI) -- the window launches
+    # smaller than requested. window.resize() runs after the frameless style
+    # is already applied and is unaffected, so re-asserting the size corrects
+    # it -- but resize() is @_shown_call-decorated and blocks on the window's
+    # "shown" event (only set once webview.start()'s message loop actually
+    # shows the window), so it must run off the main thread, started before
+    # webview.start() is called, not inline here.
+    def _fix_initial_size():
+        try:
+            window.resize(w.get("width", 380), w.get("height", 400))
+        except Exception:
+            pass
+
+    threading.Thread(target=_fix_initial_size, daemon=True).start()
     # Устанавливаем иконку окна через ctypes
     icon_path = os.path.join(APP_DIR, "icon", "app.ico")
     if os.path.exists(icon_path):
