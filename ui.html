@@ -23,7 +23,7 @@
   .serif{font-family:"Charter","Georgia","Times New Roman",serif}
   .mono{font-family:"Cascadia Code","JetBrains Mono","Consolas",monospace}
 
-  /* ---------- каркас ---------- */
+  /* ---------- layout ---------- */
   #app{display:flex; flex-direction:column; height:100vh}
   header{
     flex:0 0 40px; display:flex; align-items:center; gap:8px; padding:0 10px 0 12px;
@@ -63,7 +63,7 @@
   nav button#nav-settings{flex:0 0 auto; padding:0 12px 0 10px; display:flex; align-items:center; justify-content:center; margin-left:auto}
   nav button#nav-settings svg{width:15px; height:15px; display:block}
 
-  /* ---------- обзор ---------- */
+  /* ---------- overview ---------- */
   .strip{padding:14px 16px 16px; border-bottom:1px solid rgba(0,0,0,.25); cursor:pointer}
   .strip .top{display:flex; align-items:baseline; gap:8px}
   .strip .glyph{font-size:13px}
@@ -111,7 +111,7 @@
 
   .strip .err{font-size:10.5px; margin-top:6px; opacity:.75; line-height:1.4}
 
-  /* ---------- детальные страницы ---------- */
+  /* ---------- detail pages ---------- */
   .detail{min-height:100%; padding:18px 18px 24px}
   .detail .brand{display:flex; align-items:center; gap:8px; margin-bottom:2px}
   .detail .brand .glyph{font-size:16px}
@@ -169,7 +169,7 @@
 
   .empty{padding:28px 18px; text-align:center; opacity:.55; font-size:11px; line-height:1.6}
   
-  /* ---------- настройки ---------- */
+  /* ---------- settings ---------- */
   .settings{padding:18px; min-height:100%}
   .settings h2{font-size:16px; margin:0 0 16px; color:#ececf1}
   .settings .section{margin-bottom:20px}
@@ -199,7 +199,7 @@
   .settings .save-btn:disabled{opacity:.6; cursor:not-allowed}
   .settings .saved-msg{font-size:11px; color:#2ECC40; margin-top:8px; text-align:center}
   
-  /* ---------- загрузка ---------- */
+  /* ---------- loading ---------- */
   .loading-overlay{
     position:absolute; inset:0; display:flex; flex-direction:column;
     align-items:center; justify-content:center; gap:12px; z-index:100;
@@ -309,14 +309,14 @@ const L10N = {
     dol: " за",
     of: " из",
     language: "Язык / Language",
-    // перевод label'ов окон из widget.py
+    // Window-label translations from widget.py.
     "Сессия (5 ч)": "Сессия (5 ч)",
     "Неделя": "Неделя",
     "Неделя · Opus": "Неделя · Opus",
     "Неделя · Sonnet": "Неделя · Sonnet",
     "Неделя · приложения": "Неделя · приложения",
     "Месяц": "Месяц",
-    // перевод ошибок из widget.py
+    // Error translations from widget.py.
     "Внутренняя ошибка:\n": "Внутренняя ошибка:\n",
     "Не найден токен Claude Code": "Не найден токен Claude Code",
     "Не найден ~/.codex/auth.json": "Не найден ~/.codex/auth.json",
@@ -386,14 +386,14 @@ const L10N = {
     mins: "m",
     of: " of ",
     language: "Language",
-    // перевод label'ов окон из widget.py
+    // Window-label translations from widget.py.
     "Сессия (5 ч)": "Session (5h)",
     "Неделя": "Week",
     "Неделя · Opus": "Week · Opus",
     "Неделя · Sonnet": "Week · Sonnet",
     "Неделя · приложения": "Week · apps",
     "Месяц": "Month",
-    // перевод ошибок из widget.py
+    // Error translations from widget.py.
     "Внутренняя ошибка:\n": "Internal error:\n",
     "Не найден токен Claude Code": "Claude Code token not found",
     "Не найден ~/.codex/auth.json": "Codex auth.json not found",
@@ -418,17 +418,17 @@ const L10N = {
 
 function t(key){ return L10N[LANG]?.[key] || L10N["en"][key] || key; }
 
-// Перевод ошибок и динамических строк: точное совпадение → перевод, иначе как есть
+// Translate errors and dynamic strings by exact match; otherwise leave unchanged.
 function terr(msg){
   if(!msg) return "";
-  // Полное совпадение
+  // Exact match.
   const fullTr = t(msg);
   if(fullTr !== msg) return fullTr;
-  // Первая строка (для внутренних ошибок с трейсом)
+  // Match the first line for internal errors that include a traceback.
   const firstLine = msg.split("\n")[0];
   const lineTr = t(firstLine);
   if(lineTr !== firstLine) return lineTr + (msg.includes("\n") ? msg.substring(msg.indexOf("\n")) : "");
-  // "Доп. лимит N" → переводим префикс
+  // Translate the numbered "extra limit" prefix.
   if(msg.startsWith("Доп. лимит ")){
     return t("Доп. лимит") + " " + msg.split(" ").slice(2).join(" ");
   }
@@ -451,16 +451,16 @@ function updateTitles(){
   }
 }
 
-/* Логотип OpenAI как inline SVG: не зависит от шрифта (⬡ U+2B21 рисовался как tofu) */
+/* Inline OpenAI SVG logo avoids font dependence (⬡ U+2B21 rendered as tofu). */
 const OPENAI_MARK = '<svg viewBox="0 0 24 24" fill="currentColor" role="img" aria-label="OpenAI">'
   + '<path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>';
-/* Логотип OpenRouter как inline SVG: не зависит от шрифта */
+/* Inline OpenRouter SVG logo avoids font dependence. */
 const OPENROUTER_MARK = '<svg viewBox="0 0 24 24" fill="currentColor" role="img" aria-label="OpenRouter">'
   + '<path d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>';
 const GLYPH = { claude:"✳", codex:OPENAI_MARK, opencode:"█", openrouter:OPENROUTER_MARK };
 const THEME = { claude:"th-claude", codex:"th-codex", opencode:"th-opencode", openrouter:"th-openrouter" };
 
-/* ---------- утилиты ---------- */
+/* ---------- utilities ---------- */
 const $ = s => document.querySelector(s);
 function esc(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function now(){ return Date.now()/1000 + clockSkew; }
@@ -495,7 +495,7 @@ function asciiBar(pctRemaining, width=18){
 function sessionWin(p){
   return (p.windows||[]).find(w => w.id === "session") || (p.windows||[])[0] || null;
 }
-/* Окна для обзора: сессия + неделя (если есть) */
+/* Overview windows: session + week, when available. */
 function overviewWins(p){
   const ws = p.windows || [];
   const out = [];
@@ -507,7 +507,7 @@ function overviewWins(p){
   return out;
 }
 
-/* ---------- обзор ---------- */
+/* ---------- overview ---------- */
 function renderOverview(){
   const el = $("#page-overview");
   if(!DATA){ el.innerHTML = `<div class='empty'>${t("loading")}</div>`; return; }
@@ -566,7 +566,7 @@ function renderOverview(){
     s.addEventListener("click", () => showPage(s.dataset.goto)));
 }
 
-/* ---------- детальная страница ---------- */
+/* ---------- detail page ---------- */
 function renderDetail(id){
   const el = $("#page-" + id);
   const p = DATA && DATA.providers[id];
@@ -588,7 +588,7 @@ function renderDetail(id){
     return;
   }
 
-  // Статус токена
+  // Token status.
   const tokenStatus = DATA && DATA.token_status && DATA.token_status[id];
   let statusHtml = "";
   if(tokenStatus){
@@ -630,7 +630,7 @@ function renderDetail(id){
     }
   }
 
-  // мета-инфо
+  // Metadata.
   const metaBits = [];
   if(p.meta){
     if(p.meta.credits != null) metaBits.push(t("credits") + ": " + p.meta.credits);
@@ -657,7 +657,7 @@ function renderDetail(id){
         
         if(result.success){
           btn.textContent = terr(result.output);
-          // Автообновление через 30 сек
+          // Refresh automatically after 30 seconds.
           setTimeout(() => window.pywebview.api.refresh_now(), 30000);
         } else {
           btn.textContent = terr(result.output) || t("error");
@@ -677,7 +677,7 @@ function renderAll(){
   renderSettings();
   if(DATA && DATA.updated_at){
     $("#updated").textContent = t("updated") + " " + fmtClock(DATA.updated_at);
-    // Скрываем оверлей загрузки
+    // Hide the loading overlay.
     const loading = $("#loading");
     if(loading) loading.classList.add("hidden");
   }
@@ -688,13 +688,13 @@ function renderSettings(){
   if(!DATA || !DATA._config) return;
   const cfg = DATA._config;
   
-  // Сохраняем текущие значения полей если они есть
+  // Preserve current field values when present.
   const existingRefresh = $("#cfg-refresh")?.value;
   const existingWidth = $("#cfg-width")?.value;
   const existingHeight = $("#cfg-height")?.value;
   const existingOnTop = $("#cfg-ontop")?.checked;
   
-  // Если поля уже есть и пользователь редактирует — не пересоздаём
+  // Do not recreate existing fields while the user is editing them.
   if(existingRefresh && document.activeElement?.id?.startsWith("cfg-")
      && document.activeElement.type !== "checkbox") return;
   
@@ -783,7 +783,7 @@ function renderSettings(){
       const msg = $("#saved-msg");
       msg.style.display = "block";
       setTimeout(() => msg.style.display = "none", 2000);
-      // Применяем язык сразу, не ждём pull
+      // Apply the language immediately without waiting for pull().
       if(lang !== LANG){
         LANG = lang;
         updateTitles();
@@ -793,10 +793,10 @@ function renderSettings(){
       setTimeout(() => pull(true), 500);
     }
   });
-  // Toggle on_top из настроек — синхронизируем с кнопкой в хедере
+  // Keep the settings on_top toggle in sync with the header button.
   $("#cfg-ontop").addEventListener("change", async () => {
     const v = await window.pywebview.api.toggle_on_top();
-    // Обновляем кнопку в хедере
+    // Update the header button.
     const pinBtn = $("#btn-pin");
     if(pinBtn) pinBtn.classList.toggle("pin-on", !!v);
   });
@@ -813,7 +813,7 @@ function tickCountdown(){
   $("#countdown").textContent = remaining > 0 ? remaining + t("sec") : "";
 }
 
-/* ---------- навигация ---------- */
+/* ---------- navigation ---------- */
 function showPage(id){
   document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
   $("#page-" + id).classList.add("active");
@@ -823,7 +823,7 @@ function showPage(id){
 document.querySelectorAll("nav button").forEach(b =>
   b.addEventListener("click", () => showPage(b.dataset.page)));
 
-/* ---------- связь с бэкендом ---------- */
+/* ---------- backend communication ---------- */
 async function pull(isManual = false){
   if(!window.pywebview || !window.pywebview.api) return;
   try{
@@ -832,25 +832,25 @@ async function pull(isManual = false){
       clockSkew = snap.now - Date.now()/1000;
       DATA = snap;
       pullInterval = (snap.refresh_interval_sec || 300) * 1000;
-      // Синхронизируем язык из конфига
+      // Sync the language from config.
       const oldLang = LANG;
       if(!LANG || (DATA._config && DATA._config.language && DATA._config.language !== LANG)){
         LANG = (DATA._config && DATA._config.language) || "en";
       }
       if(oldLang !== LANG) updateTitles();
-      // Сбрасываем таймер когда данные действительно обновились или при ручном обновлении
+      // Reset the timer after a real data update or a manual refresh.
       if(isManual || snap.updated_at !== lastUpdatedAt){
         lastPullTime = Date.now();
         lastUpdatedAt = snap.updated_at;
       }
       renderAll();
-      // Инициализируем кнопку pin при первом pull
+      // Initialize the pin button on the first pull().
       if(!isManual && DATA && DATA.on_top !== undefined){
         const pinBtn = $("#btn-pin");
         pinBtn.classList.toggle("pin-on", !!DATA.on_top);
       }
     }
-  }catch(e){ /* бэкенд ещё поднимается */ }
+  }catch(e){ /* The backend is still starting. */ }
 }
 
 window.addEventListener("pywebviewready", () => {
@@ -890,7 +890,7 @@ window.addEventListener("pywebviewready", () => {
     const v = await window.pywebview.api.toggle_on_top();
     if(v !== null){
       pinBtn.classList.toggle("pin-on", v);
-      // Синхронизируем toggle в настройках
+      // Sync the settings toggle.
       const cfgOnTop = $("#cfg-ontop");
       if(cfgOnTop) cfgOnTop.checked = !!v;
     }
@@ -902,7 +902,7 @@ window.addEventListener("pywebviewready", () => {
   }, 5000);
 });
 
-// демо-режим при открытии файла в браузере без pywebview
+// Demo mode when the file is opened in a browser without pywebview.
 setTimeout(() => {
   if(window.pywebview) return;
   clockSkew = 0;

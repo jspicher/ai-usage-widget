@@ -1,4 +1,4 @@
-' Запуск виджета без окна консоли
+' Start the widget without a console window.
 Set fso = CreateObject("Scripting.FileSystemObject")
 dir = fso.GetParentFolderName(WScript.ScriptFullName)
 Set sh = CreateObject("WScript.Shell")

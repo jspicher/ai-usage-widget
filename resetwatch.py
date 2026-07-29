@@ -1,15 +1,15 @@
-"""Обнаружение сброса недельной квоты.
+"""Detect weekly quota resets.
 
-Чистая логика: без GUI, без сети, без глобального состояния.
-Сравнение идёт между двумя значениями resets_at, а не с текущим временем,
-поэтому скачок системных часов не может создать ложное событие.
+This module contains pure logic with no GUI, network, or global state. It
+compares two ``resets_at`` values rather than comparing against the current
+time, so a system-clock jump cannot create a false event.
 
-Оговорка: часть API отдаёт не абсолютный resets_at, а "через сколько
-секунд", и тогда widget.py вынужден вычислить момент как now() + secs.
-Такое значение само зависит от часов, и сравнение двух подряд идущих
-вычисленных отметок снова стало бы сравнением с часами. Такие окна
-помечены флагом resets_at_derived, и для них сигнал сдвига границы
-отключён -- остаётся только скачок остатка, на часы не завязанный.
+Some APIs return a relative duration instead of an absolute ``resets_at``.
+widget.py must then calculate the timestamp as ``now() + secs``. Such a value
+depends on the clock, so comparing two consecutive derived timestamps would
+again amount to comparing against the clock. Those windows are marked with
+``resets_at_derived``; boundary-movement detection is disabled for them, while
+the clock-independent remaining-balance jump signal stays active.
 """
 
 import hashlib
@@ -24,7 +24,7 @@ DEFAULT_RESETS_ADVANCE_SEC = 3600
 
 
 def _week_reading(provider):
-    """Сопоставимое показание недельного окна, либо None."""
+    """Return a comparable weekly-window reading, or None."""
     if not isinstance(provider, dict) or not provider.get("ok"):
         return None
     for w in provider.get("windows") or []:
@@ -39,7 +39,7 @@ def _week_reading(provider):
             return {
                 "resets_at": float(resets_at),
                 "remaining_pct": float(pct),
-                # Отметка "вычислено от текущего времени" -- см. докстринг модуля.
+                # Mark timestamps derived from the current time; see module docs.
                 "resets_at_derived": bool(extra.get("resets_at_derived")),
             }
         except (TypeError, ValueError):
@@ -48,7 +48,7 @@ def _week_reading(provider):
 
 
 def readings(providers):
-    """{provider_id: {...}} только для провайдеров с пригодным недельным окном."""
+    """Return {provider_id: {...}} for providers with a usable weekly window."""
     out = {}
     for pid, p in (providers or {}).items():
         r = _week_reading(p)
@@ -58,13 +58,13 @@ def readings(providers):
 
 
 def event_id(provider_id, resets_at, to_pct):
-    """Стабильный id: одно и то же событие не попадёт в очередь дважды."""
+    """Build a stable ID so the same event cannot be queued twice."""
     raw = "%s|%d|%.2f" % (provider_id, int(resets_at or 0), float(to_pct or 0.0))
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
 def detect_resets(prev_readings, next_readings, cfg=None, while_away=False, now=None):
-    """Событие, если сдвинулась граница окна ЛИБО подскочил остаток."""
+    """Emit an event if the window boundary moves OR the balance jumps."""
     cfg = cfg or {}
     try:
         pct_threshold = float(cfg.get("pct_jump_threshold", DEFAULT_PCT_JUMP))
@@ -81,10 +81,10 @@ def detect_resets(prev_readings, next_readings, cfg=None, while_away=False, now=
     for pid, new in (next_readings or {}).items():
         old = (prev_readings or {}).get(pid)
         if not old:
-            continue  # первое наблюдение -- только засев базовой линии
-        # Если хоть одна из двух отметок вычислена от now(), их разность
-        # отражает в том числе сдвиг часов -- сигнал границы отключаем и
-        # полагаемся только на скачок остатка.
+            continue  # The first observation only seeds the baseline.
+        # If either timestamp was derived from now(), their difference also
+        # reflects clock movement. Disable the boundary signal and rely only
+        # on a jump in the remaining balance.
         derived = bool(new.get("resets_at_derived") or old.get("resets_at_derived"))
         boundary_moved = (not derived
                           and (new["resets_at"] - old["resets_at"]) > advance_threshold)
@@ -104,22 +104,22 @@ def detect_resets(prev_readings, next_readings, cfg=None, while_away=False, now=
 
 
 class AlertStore:
-    """Базовая линия показаний плюс неотклонённые оповещения, на диске.
+    """Store the reading baseline and undismissed alerts on disk.
 
-    Запись атомарная (временный файл + replace): падение в момент записи
-    не может испортить файл. Битый файл трактуется как отсутствующий.
+    Writes are atomic (temporary file + replace), so a failure during a write
+    cannot corrupt the file. A corrupt file is treated as missing.
     """
 
     def __init__(self, path, log_path=None):
         self.path = path
-        # Лог кладём рядом с состоянием, то есть в каталог данных.
+        # Keep the log beside the state file, in the data directory.
         self.log_path = log_path or os.path.join(
             os.path.dirname(os.path.abspath(path)) or ".", "widget-error.log")
         self.seen = {}
         self.pending = []
-        # False после неудачной save(). Приложение под pythonw без консоли,
-        # поэтому единственный способ узнать о сбое записи -- этот флаг
-        # (его показывает UI) и файл лога.
+        # False after a failed save(). The app runs under pythonw without a
+        # console, so this UI-visible flag and the log file are the only ways
+        # to learn about a write failure.
         self.last_save_ok = True
 
     def load(self):
@@ -136,10 +136,10 @@ class AlertStore:
         return self
 
     def _log_failure(self, exc):
-        """Строка в лог рядом с состоянием. Сбой самого лога проглатываем.
+        """Append to the log beside the state file, ignoring log failures.
 
-        Логирование не имеет права уронить save(): она и так вызывается из
-        потока опроса и из потока GUI, и не должна бросать наружу.
+        Logging must not break save(), which is called from both the polling
+        and GUI threads and must not propagate exceptions.
         """
         try:
             line = "%s save failed: %s: %s\n" % (
@@ -150,12 +150,12 @@ class AlertStore:
             pass
 
     def save(self):
-        """True при успешной записи, False при сбое. Наружу не бросает.
+        """Return True on success and False on failure; never raise.
 
-        Молчаливый сбой здесь незаметен вообще: базовая линия в памяти
-        продолжает работать, и виджет выглядит здоровым, а обещания
-        "переживает перезапуск" уже нет. Поэтому результат возвращается,
-        пишется в лог и показывается в настройках.
+        A silent failure would otherwise be invisible: the in-memory baseline
+        keeps working and the widget looks healthy, but persistence across
+        restarts is lost. Therefore the result is returned, logged, and shown
+        in settings.
         """
         payload = {"seen": self.seen, "pending": self.pending}
         folder = os.path.dirname(os.path.abspath(self.path)) or "."
@@ -181,11 +181,11 @@ class AlertStore:
         return True
 
     def merge_seen(self, new_readings):
-        """Обновляет только присутствующие ключи.
+        """Update only keys present in ``new_readings``.
 
-        Провайдер с ошибкой отсутствует в new_readings, и его базовая линия
-        должна сохраниться -- иначе восстановление после сбоя выглядело бы
-        как сброс квоты.
+        A provider with an error is absent from ``new_readings``, so its
+        baseline must be preserved. Otherwise recovery after a failure would
+        look like a quota reset.
         """
         for pid, reading in (new_readings or {}).items():
             self.seen[pid] = reading

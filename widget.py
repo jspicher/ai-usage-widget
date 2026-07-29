@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-AI Usage Widget — виджет остатков лимитов для Claude Code, Codex CLI и OpenCode.
+AI Usage Widget — remaining-quota widget for Claude Code, Codex CLI, and OpenCode.
 
-Читает локальные файлы авторизации каждого CLI и опрашивает их usage-эндпоинты:
+Reads each CLI's local authentication files and queries its usage endpoints:
   * Claude Code : ~/.claude/.credentials.json  -> api.anthropic.com/api/oauth/usage
   * Codex CLI   : ~/.codex/auth.json           -> chatgpt.com/backend-api/wham/usage
   * OpenCode    : ~/.local/share/opencode/auth.json -> opencode.ai (best effort)
 
-Запуск:  python widget.py
-Зависимости:  pip install pywebview
+Run:          python widget.py
+Dependencies: pip install pywebview
 """
 
 import base64
@@ -34,19 +34,19 @@ try:
 except ImportError:
     TRAY_AVAILABLE = False
 
-# Каталог бандла и каталог данных -- это РАЗНЫЕ вещи, и сливать их обратно
-# в одну переменную нельзя.
+# The bundle directory and the data directory are DIFFERENT things and must not
+# be merged back into one variable.
 #
-# В onefile-сборке PyInstaller распаковывает ui.html / alert.html / icon во
-# временный каталог _MEIxxxxx и удаляет его при выходе процесса. Читать
-# оттуда обязательно (иначе приложение не найдёт собственный HTML), а вот
-# писать туда бессмысленно: config.json и reset-alert-state.json исчезали бы
-# вместе с каталогом при каждом выходе. Ошибки при этом нет ни одной --
-# запись успешна, файл просто испаряется, и обещанное "переживает
-# перезапуск" молча не работает вообще никогда.
+# In a one-file build, PyInstaller extracts ui.html / alert.html / icon into a
+# temporary _MEIxxxxx directory and deletes it when the process exits. Resources
+# must be read from there (otherwise the app cannot find its own HTML), but
+# writing there is pointless: config.json and reset-alert-state.json would
+# disappear with the directory on every exit. No error is raised—the write
+# succeeds, the file simply vanishes, and the promised persistence across
+# restarts silently never works.
 #
-# Поэтому: APP_DIR -- только упакованные ресурсы (read-only),
-# DATA_DIR -- только пользовательское состояние (read-write).
+# Therefore: APP_DIR is only for bundled resources (read-only), while DATA_DIR
+# is only for user state (read-write).
 if getattr(sys, "frozen", False):
     APP_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
     DATA_DIR = os.path.dirname(os.path.abspath(sys.executable))
@@ -66,17 +66,17 @@ DEFAULT_CONFIG = {
     "window": {"x": None, "y": None, "width": 380, "height": 400, "on_top": True},
     "language": "en",
     "opencode": {
-        # Если у OpenCode появится/известен официальный usage-эндпоинт — впиши его сюда.
+        # If OpenCode gets a known official usage endpoint, enter it here.
         "usage_endpoint": "",
-        # Кандидаты, которые виджет попробует автоматически:
+        # Candidate endpoints that the widget will try automatically:
         "endpoint_candidates": [
             "https://opencode.ai/api/usage",
             "https://opencode.ai/zen/v1/usage",
             "https://opencode.ai/zen/go/v1/usage",
             "https://api.opencode.ai/v1/usage",
         ],
-        # Ручной режим: если API недоступен, можно вписать лимиты плана (в $)
-        # и виджет посчитает расход по локальной статистике opencode (если найдёт).
+        # Manual mode: if the API is unavailable, enter plan limits (in USD)
+        # and the widget will calculate usage from local OpenCode stats, if found.
         "manual_limits": {"session_usd": None, "week_usd": None, "month_usd": None},
     },
 }
@@ -118,11 +118,11 @@ def http_get_json(url, headers=None, timeout=15):
 
 
 def iso_to_epoch(value):
-    """Принимает ISO-строку / unix-число / None -> epoch seconds или None."""
+    """Convert an ISO string, Unix number, or None to epoch seconds or None."""
     if value is None:
         return None
     if isinstance(value, (int, float)):
-        # уже epoch (секунды или миллисекунды)
+        # Already an epoch value, in seconds or milliseconds.
         return value / 1000.0 if value > 4e10 else float(value)
     if isinstance(value, str):
         s = value.strip()
@@ -150,12 +150,12 @@ def pick(d, *keys):
 
 
 def tooltip_window(p):
-    """Окно для подсказки в трее: недельное, иначе сессия, иначе первое.
+    """Choose the tray-tooltip window: weekly, then session, then the first.
 
-    Именно недельное: подсказка должна говорить о том же лимите, о котором
-    предупреждает окно сброса, а у Codex Pro сессионного окна и вовсе нет —
-    там только недельное. Раньше здесь шла сессия, и Claude показывал
-    пятичасовой лимит рядом с недельным лимитом Codex."""
+    Prefer the weekly window so the tooltip describes the same limit as the
+    reset alert. Codex Pro has no session window at all, only a weekly one.
+    This used to prefer the session, which put Claude's five-hour limit beside
+    Codex's weekly limit."""
     ws = p.get("windows") or []
     return (next((x for x in ws if x["id"] == "week"), None)
             or next((x for x in ws if x["id"] == "session"), None)
@@ -164,7 +164,7 @@ def tooltip_window(p):
 
 def make_window(win_id, label, used_pct=None, resets_at=None,
                 used_usd=None, limit_usd=None, extra=None):
-    """Нормализованное окно лимита."""
+    """Build a normalized quota window."""
     if used_pct is None and used_usd is not None and limit_usd:
         used_pct = 100.0 * float(used_usd) / float(limit_usd)
     if used_pct is not None:
@@ -174,7 +174,7 @@ def make_window(win_id, label, used_pct=None, resets_at=None,
         "label": label,
         "used_pct": used_pct,
         "remaining_pct": None if used_pct is None else round(100.0 - used_pct, 2),
-        "resets_at": resets_at,          # epoch seconds или None
+        "resets_at": resets_at,          # Epoch seconds or None.
         "used_usd": used_usd,
         "limit_usd": limit_usd,
         "extra": extra or {},
@@ -259,7 +259,7 @@ def fetch_claude():
         if pct is not None or resets is not None:
             result["windows"].append(make_window(wid, label, used_pct=pct, resets_at=resets))
 
-    # extra usage / кредиты, если сервер их отдаёт
+    # Extra usage / credits, when returned by the server.
     extra = data.get("extra_usage") or data.get("extraUsage")
     if isinstance(extra, dict):
         result["meta"]["extra_usage"] = extra
@@ -354,16 +354,17 @@ def fetch_codex():
             return
         pct = pick(obj, "used_percent", "usage_percent", "utilization")
         resets = iso_to_epoch(pick(obj, "resets_at", "reset_at", "reset_time"))
-        # Абсолютной отметки нет -- вычисляем от текущего времени, но
-        # обязательно помечаем результат: он зависит от системных часов, и
-        # resetwatch не должен принимать его сдвиг за сброс квоты.
+        # No absolute timestamp is available, so derive one from the current
+        # time and mark it as such. It depends on the system clock, and
+        # resetwatch must not mistake its movement for a quota reset.
         derived = False
         if resets is None:
             secs = pick(obj, "resets_in_seconds", "reset_after_seconds")
             if secs is not None:
                 resets = time.time() + float(secs)
                 derived = True
-        # длина окна помогает подписать: минуты или секунды (limit_window_seconds)
+        # The window duration helps determine the label; it may be in minutes
+        # or seconds (limit_window_seconds).
         mins = pick(obj, "window_minutes", "limit_window_minutes")
         if mins is None:
             win_secs = pick(obj, "limit_window_seconds", "window_seconds")
@@ -384,7 +385,7 @@ def fetch_codex():
     add_window(rl.get("primary_window") or rl.get("primary"), "session", "Сессия (5 ч)")
     add_window(rl.get("secondary_window") or rl.get("secondary"), "week", "Неделя")
 
-    # дополнительные модельные лимиты (например, Spark)
+    # Additional model-specific limits (for example, Spark).
     for i, item in enumerate(data.get("additional_rate_limits") or []):
         if not isinstance(item, dict):
             continue
@@ -433,14 +434,14 @@ def _opencode_key():
                     data = json.load(f)
             except Exception:
                 continue
-            # ключи хранятся по id провайдера: "opencode", "opencode-go", "zen"...
+            # Keys are stored by provider ID: "opencode", "opencode-go", "zen", etc.
             for prov_id in ("opencode", "opencode-go", "opencode-zen", "zen"):
                 entry = data.get(prov_id)
                 if isinstance(entry, dict):
                     key = entry.get("key") or entry.get("apiKey") or entry.get("api_key")
                     if key:
                         return key, prov_id
-            # иначе — первый попавшийся api-ключ
+            # Otherwise, use the first API key found.
             for prov_id, entry in data.items():
                 if isinstance(entry, dict) and entry.get("type") in ("api", "apikey"):
                     key = entry.get("key")
@@ -450,7 +451,7 @@ def _opencode_key():
 
 
 def _parse_opencode_payload(data, result):
-    """Гибкий разбор ответа usage: rolling5h/weekly/monthly и варианты."""
+    """Flexibly parse rolling5h/weekly/monthly usage-response variants."""
     alias = {
         "session": ("session", "Сессия (5 ч)"),
         "rolling5h": ("session", "Сессия (5 ч)"),
@@ -548,7 +549,7 @@ OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 
 
 def _openrouter_key():
-    """Ключ из окружения, затем из config.json. Приложение ключ не пишет."""
+    """Read the key from the environment, then config.json; never write it."""
     key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
     if key:
         return key, "env"
@@ -591,7 +592,7 @@ def fetch_openrouter():
         result["error"] = "API ответил, но лимиты не найдены"
         return result
 
-    # total/used могут прийти нечисловыми (смена формата API) -- не роняем виджет.
+    # API format changes may make total/used nonnumeric; do not crash the widget.
     try:
         total = float(total)
         used = float(used)
@@ -605,9 +606,9 @@ def fetch_openrouter():
         "used_usd": round(used, 2),
         "week_usd": None,
     }
-    # Недельный расход не критичен: сбой здесь не роняет карточку.
-    # Метку ключа и его маску не собираем вообще: UI их не показывает, а
-    # производные от ключа данные незачем гонять в снимок и в WebView.
+    # Weekly usage is optional; a failure here must not break the card.
+    # Do not collect the key label or mask: the UI does not show them, and
+    # key-derived data does not need to travel through snapshots or the WebView.
     try:
         key_data = (http_get_json(OPENROUTER_KEY_URL, headers) or {}).get("data") or {}
         weekly = key_data.get("usage_weekly")
@@ -622,7 +623,7 @@ def fetch_openrouter():
 
 
 # ----------------------------------------------------------------------------
-# сбор данных + JS API
+# Data collection + JS API
 # ----------------------------------------------------------------------------
 
 class State:
@@ -640,29 +641,29 @@ CFG = load_config()
 # ever fails -- see persist_window_geometry().
 _INITIAL_SIZE_OK = False
 
-# DATA_DIR, а не APP_DIR: состояние оповещений обязано пережить выход
-# процесса даже в onefile-сборке -- см. комментарий у DATA_DIR.
+# Use DATA_DIR, not APP_DIR: alert state must survive process exit even in a
+# one-file build; see the comment where DATA_DIR is defined.
 ALERT_STATE_PATH = os.path.join(DATA_DIR, "reset-alert-state.json")
 ALERTS = resetwatch.AlertStore(ALERT_STATE_PATH).load()
-# Защищает ALERTS (seen/pending) и сопутствующий save() от гонки между
-# потоком опроса (process_reset_alerts) и потоком GUI (AlertApi).
-# Без этого dismiss() из GUI мог быть перезаписан add()/save() из потока
-# опроса, который успел прочитать состояние ДО отклонения -- оповещение
-# воскресало сразу после того, как пользователь его закрыл.
+# Protect ALERTS (seen/pending) and its save() calls from races between the
+# polling thread (process_reset_alerts) and the GUI thread (AlertApi). Without
+# this lock, a GUI dismiss() could be overwritten by polling-thread add()/save()
+# calls that read the state BEFORE dismissal, causing the alert to reappear
+# immediately after the user closed it.
 ALERTS_LOCK = threading.Lock()
 _FIRST_COMPARE = True
 
 
-# Геометрия сохраняется ровно один раз за жизнь процесса. Путей выхода два
-# (кнопка X и "Выход" в трее), и оба заканчиваются возвратом из
-# webview.start() в main() -- без флага один и тот же выход записал бы
-# конфиг дважды, причём второй раз уже по разрушенному окну.
+# Save geometry exactly once during the process lifetime. Both exit paths (the
+# X button and the tray's Exit command) ultimately return from webview.start()
+# to main(). Without this flag, the same exit would write the config twice,
+# with the second write reading an already-destroyed window.
 _GEOMETRY_LOCK = threading.Lock()
 _GEOMETRY_SAVED = False
 
 
 def persist_window_geometry(window):
-    """Запоминает позицию и размер главного окна. Идемпотентно."""
+    """Persist the main window's position and size; safe to call repeatedly."""
     global _GEOMETRY_SAVED
     with _GEOMETRY_LOCK:
         if _GEOMETRY_SAVED:
@@ -682,12 +683,12 @@ def persist_window_geometry(window):
 
 
 def shutdown_app():
-    """Единственный путь выхода: и кнопка X, и пункт "Выход" в трее.
+    """Handle both exit paths: the X button and the tray's Exit command.
 
-    Окно ОБЯЗАТЕЛЬНО разрушить: пока оно живо, webview.start() в main() не
-    вернётся, и после остановки трея процесс остаётся висеть с замороженным
-    виджетом поверх всех окон, без иконки в трее и без цикла опроса --
-    убить его можно только через диспетчер задач.
+    The window MUST be destroyed. While it remains alive, webview.start() in
+    main() will not return. Stopping the tray first would leave the process
+    hanging with a frozen always-on-top widget, no tray icon, and no polling
+    loop; it could then be terminated only through Task Manager.
     """
     STATE.shutdown_event.set()
     try:
@@ -699,16 +700,15 @@ def shutdown_app():
 
 
 class TrayManager:
-    """Одна статическая иконка в трее, а не по иконке на провайдера.
+    """Manage one static tray icon instead of one icon per provider.
 
-    Раньше на каждого провайдера создавалась своя иконка с процентами,
-    нарисованными текстом поверх пустого квадрата. Их было две, они
-    плодились в трее и вдобавок исчезали, стоило провайдеру ответить
-    ошибкой. Теперь иконка одна, статическая (логотип приложения), живёт
-    от старта до выхода, а цифры переехали в подсказку.
+    Previously, each provider got an icon with percentages drawn over an empty
+    square. Multiple icons accumulated in the tray and disappeared whenever a
+    provider returned an error. There is now one static app-logo icon that
+    lives from startup to exit, with the figures shown in its tooltip.
     """
 
-    # Windows держит подсказку в szTip: 128 wchar вместе с нулём.
+    # Windows stores the tooltip in szTip: 128 wchar values including the null.
     TOOLTIP_MAX = 127
 
     def __init__(self):
@@ -722,7 +722,7 @@ class TrayManager:
             with Image.open(path) as src:
                 return src.convert("RGBA").resize((64, 64), Image.LANCZOS)
         except Exception:
-            # Без файла иконки трей всё равно обязан подняться.
+            # The tray must still start if the icon file is unavailable.
             img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
             ImageDraw.Draw(img).ellipse((4, 4, 59, 59), outline="#1E90FF", width=6)
             return img
@@ -745,8 +745,8 @@ class TrayManager:
             if not w or w.get("remaining_pct") is None:
                 lines.append("%s: —" % pname)
                 continue
-            # %g, а не %s: round(18.0, 1) печатается как "18.0", а окно
-            # рисует "18" -- подсказка не должна расходиться с карточкой.
+            # Use %g rather than %s: round(18.0, 1) prints "18.0", while the
+            # window shows "18"; the tooltip should match the card.
             pct = "%g" % round(w["remaining_pct"], 1)
             resets = w.get("resets_at")
             if resets:
@@ -758,7 +758,7 @@ class TrayManager:
             else:
                 lines.append("%s: %s%%" % (pname, pct))
 
-        # OpenRouter -- это баланс, а не окно: ни процентов, ни сброса.
+        # OpenRouter is a balance, not a quota window: no percentage or reset.
         p = snap["providers"].get("openrouter")
         rem_usd = None
         if p and p.get("ok"):
@@ -794,8 +794,9 @@ class TrayManager:
         self._thread.start()
 
     def update_tooltip(self):
-        # Подсказка -- косметика, и уронить ею опрос данных нельзя: ровно
-        # так этот трей и молчал, пока _build_tooltip не существовал вовсе.
+        # The tooltip is cosmetic and must not break data polling. The tray
+        # previously stayed silent for exactly this reason when _build_tooltip
+        # did not exist.
         icon = self.icon
         if icon is None:
             return
@@ -819,10 +820,9 @@ class TrayManager:
             self.window_ref.show()
 
     def _on_quit(self, icon, item):
-        # Ровно тот же путь, что и у кнопки X (JsApi.close): сохранить
-        # геометрию и разрушить окно. Иконку трея останавливает main() уже
-        # после возврата из webview.start() -- останавливать её здесь
-        # значило бы гасить трей раньше, чем закрылось окно.
+        # Follow the same path as the X button (JsApi.close): save geometry and
+        # destroy the window. main() stops the tray icon after webview.start()
+        # returns; stopping it here would hide the tray before the window closes.
         shutdown_app()
 
     def _on_refresh(self, icon, item):
@@ -837,7 +837,7 @@ TRAY = TrayManager()
 
 
 class AlertApi:
-    """API окна оповещений."""
+    """Expose the alert window API."""
 
     def get_alerts(self):
         with ALERTS_LOCK:
@@ -847,10 +847,9 @@ class AlertApi:
         with ALERTS_LOCK:
             ALERTS.dismiss(alert_id)
             ALERTS.save()
-        # Вызывается ПОСЛЕ освобождения ALERTS_LOCK: close_if_empty берёт
-        # свой собственный self.lock, и вложенность двух локов в одном
-        # порядке для всех вызывающих не нужна -- проще никогда не
-        # держать оба одновременно.
+        # Call this AFTER releasing ALERTS_LOCK. close_if_empty acquires its own
+        # self.lock, and there is no need to impose a shared nesting order on
+        # all callers when the two locks can simply never be held together.
         ALERT_WINDOW.close_if_empty()
         return True
 
@@ -863,7 +862,7 @@ class AlertApi:
 
 
 class AlertWindowManager:
-    """Одно окно на все оповещения. Не забирает фокус."""
+    """Manage one non-focus-stealing window for all alerts."""
 
     WIDTH = 340
     MARGIN = 16
@@ -873,7 +872,7 @@ class AlertWindowManager:
         self.lock = threading.Lock()
 
     def _corner(self, height):
-        """Правый нижний угол рабочей области, с запасом под панель задач."""
+        """Return the work area's bottom-right corner, allowing for the taskbar."""
         try:
             import ctypes
             user32 = ctypes.windll.user32
@@ -885,11 +884,11 @@ class AlertWindowManager:
             return None, None
 
     def raise_alert(self):
-        # Снимок под ALERTS_LOCK, отпущенным ДО self.lock -- так пара локов
-        # никогда не вкладывается. Если в зазоре между тем, как
-        # process_reset_alerts() увидел непустой pending, и этим вызовом
-        # GUI-поток успел dismiss_all(), здесь мы это увидим и не создадим
-        # окно без единого оповещения и без кнопки закрытия.
+        # Snapshot under ALERTS_LOCK and release it BEFORE acquiring self.lock,
+        # so the two locks are never nested. If the GUI thread calls
+        # dismiss_all() after process_reset_alerts() sees pending alerts but
+        # before this call, detect that here and avoid creating an empty alert
+        # window with no close button.
         with ALERTS_LOCK:
             pending_count = len(ALERTS.pending)
         if pending_count == 0:
@@ -901,16 +900,16 @@ class AlertWindowManager:
                         "window.renderAlerts && window.renderAlerts()")
                     return
                 except Exception:
-                    # Сбой мог быть и временным, а не "окна уже нет". Ссылку
-                    # мы сейчас потеряем, поэтому окно надо разрушить прямо
-                    # здесь: безрамочное окно поверх всех остальных, на
-                    # которое никто не ссылается, закрыть больше нечем.
+                    # The failure may be temporary rather than "window is gone."
+                    # Because the reference is about to be discarded, destroy
+                    # the window here; an unreferenced, frameless, always-on-top
+                    # window could not otherwise be closed.
                     self._destroy_locked()
             height = min(460, 90 + 130 * max(1, pending_count))
             x, y = self._corner(height)
-            # Отметка на случай, если create_window успеет зарегистрировать
-            # окно и упасть уже после этого: осиротевшее окно надо разрушить,
-            # а не просто забыть про него.
+            # Record the current count in case create_window registers a window
+            # and then fails. Any orphaned window must be destroyed, not merely
+            # forgotten.
             marker = len(webview.windows)
             try:
                 self.window = webview.create_window(
@@ -931,7 +930,7 @@ class AlertWindowManager:
                         pass
 
     def _destroy_locked(self):
-        """Разрушает окно и обнуляет ссылку. Вызывать только под self.lock."""
+        """Destroy the window and clear its reference; call only under self.lock."""
         if self.window is None:
             return
         try:
@@ -946,7 +945,7 @@ class AlertWindowManager:
                 self._destroy_locked()
 
     def toast(self, events):
-        """Дополнение к окну, а не замена: системный тост сам исчезнет."""
+        """Supplement the window with a system toast, which disappears itself."""
         if not events or not TRAY_AVAILABLE:
             return
         icon = TRAY.icon
@@ -968,30 +967,30 @@ ALERT_WINDOW = AlertWindowManager()
 
 
 def process_reset_alerts(providers):
-    """Сравнивает свежий снимок с базовой линией и копит оповещения."""
+    """Compare a fresh snapshot with the baseline and accumulate alerts."""
     global _FIRST_COMPARE
     cfg = CFG.get("reset_alert") or {}
     new_readings = resetwatch.readings(providers)
 
     if not cfg.get("enabled", True):
-        # Базовая линия обновляется всегда, чтобы повторное включение
-        # не выдало пачку старых сбросов.
+        # Always update the baseline so re-enabling alerts does not produce a
+        # batch of stale resets.
         with ALERTS_LOCK:
             ALERTS.merge_seen(new_readings)
             if ALERTS.pending:
                 ALERTS.dismiss_all()
             ALERTS.save()
         _FIRST_COMPARE = False
-        # ALERTS_LOCK уже отпущен -- close_if_empty берёт свой лок окна, и
-        # эти два лока не вкладываются друг в друга ни в одном порядке.
-        # Выключение оповещений должно убирать и то, что уже висит на
-        # экране, иначе окно остаётся со строками, которых больше нет.
+        # ALERTS_LOCK is already released. close_if_empty acquires the window's
+        # own lock, so these locks are never nested in either order. Disabling
+        # alerts must also remove those already on screen; otherwise the window
+        # would retain entries that no longer exist.
         ALERT_WINDOW.close_if_empty()
         return []
 
-    # Всё чтение-изменение-запись ALERTS -- под одним локом, одним куском,
-    # чтобы поток GUI (dismiss_alert/dismiss_all) не мог наложиться между
-    # detect_resets() и save() и потерять отклонение оповещения.
+    # Read, modify, and write ALERTS as one operation under a single lock so
+    # the GUI thread (dismiss_alert/dismiss_all) cannot run between
+    # detect_resets() and save() and lose an alert dismissal.
     with ALERTS_LOCK:
         events = resetwatch.detect_resets(
             ALERTS.seen, new_readings, cfg, while_away=_FIRST_COMPARE)
@@ -1001,8 +1000,8 @@ def process_reset_alerts(providers):
         has_pending = bool(ALERTS.pending)
     _FIRST_COMPARE = False
 
-    # ALERTS_LOCK уже отпущен: toast()/raise_alert() берут своё окно через
-    # ALERT_WINDOW.lock, и локи никогда не вкладываются друг в друга.
+    # ALERTS_LOCK is already released. toast()/raise_alert() acquire the window
+    # through ALERT_WINDOW.lock, so the locks are never nested.
     if added:
         ALERT_WINDOW.toast(added)
     if has_pending:
@@ -1053,12 +1052,12 @@ REDACTED = "***"
 
 
 def config_for_ui():
-    """Копия конфига без секретов -- всё, что уходит в WebView.
+    """Return the secret-free config subset sent to the WebView.
 
-    Ключ OpenRouter пользователь может положить в config.json, и без этой
-    чистки он открытым текстом улетал бы в JS-контекст при каждом опросе
-    (раз в 5 секунд). Странице он не нужен ни для чего: настройки его не
-    читают и не показывают.
+    A user may put the OpenRouter key in config.json. Without this cleanup, it
+    would be sent in plaintext to the JavaScript context on every poll (every
+    five seconds). The page does not need it; settings neither read nor display
+    the key.
     """
     cfg = copy.deepcopy(CFG)
     section = cfg.get("openrouter")
@@ -1084,7 +1083,7 @@ class JsApi:
         return snap
 
     def get_token_status(self):
-        """Проверяет статус токенов Claude и Codex."""
+        """Check Claude and Codex token status."""
         result = {"claude": None, "codex": None}
         
         # Claude
@@ -1146,7 +1145,7 @@ class JsApi:
         return True
 
     def login_claude(self):
-        """Запускает claude auth login в фоне."""
+        """Run ``claude auth login`` in the background."""
         try:
             proc = subprocess.Popen(
                 ["claude", "auth", "login"],
@@ -1161,7 +1160,7 @@ class JsApi:
             return {"success": False, "output": f"Ошибка: {str(e)}"}
 
     def login_codex(self):
-        """Запускает codex login в фоне."""
+        """Run ``codex login`` in the background."""
         try:
             proc = subprocess.Popen(
                 ["codex", "login"],
@@ -1176,7 +1175,7 @@ class JsApi:
             return {"success": False, "output": f"Ошибка: {str(e)}"}
     
     def get_token_status(self):
-        """Проверяет статус токенов Claude и Codex."""
+        """Check Claude and Codex token status."""
         result = {"claude": None, "codex": None}
         
         # Claude
@@ -1251,9 +1250,9 @@ class JsApi:
         global CFG
         try:
             old_lang = CFG.get("language", "en")
-            # Настройки ключ OpenRouter не редактируют, но если он когда-то
-            # приедет обратно уже замазанным (см. config_for_ui), записать
-            # эту заглушку в config.json значило бы стереть ключ.
+            # Settings do not edit the OpenRouter key. If a redacted value ever
+            # comes back (see config_for_ui), writing that placeholder to
+            # config.json would erase the real key.
             section = cfg.get("openrouter")
             if isinstance(section, dict) and section.get("api_key") == REDACTED:
                 section = dict(section)
@@ -1265,7 +1264,7 @@ class JsApi:
                 else:
                     CFG[k] = v
             save_config(CFG)
-            # Применить настройки окна
+            # Apply window settings.
             try:
                 win = webview.windows[0]
                 w = CFG["window"]
@@ -1273,7 +1272,7 @@ class JsApi:
                 win.resize(w.get("width", 380), w.get("height", 400))
             except Exception:
                 pass
-            # Обновить трей при смене языка
+            # Update the tray when the language changes.
             if CFG.get("language", "en") != old_lang:
                 TRAY.update_tooltip()
             return True
@@ -1290,8 +1289,8 @@ class JsApi:
         return False
 
     def update_tray_icon(self):
-        # Сама иконка статическая: обновлять в ней нечего, кроме подсказки.
-        # Имя метода оставлено -- его зовёт ui.html на каждом опросе.
+        # The icon itself is static; only its tooltip needs updating. Keep this
+        # method name because ui.html calls it on every poll.
         if TRAY_AVAILABLE and TRAY.window_ref:
             TRAY.update_tooltip()
             return True
@@ -1341,7 +1340,7 @@ def main():
             pass
 
     threading.Thread(target=_fix_initial_size, daemon=True).start()
-    # Устанавливаем иконку окна через ctypes
+    # Set the window icon through ctypes.
     icon_path = os.path.join(APP_DIR, "icon", "app.ico")
     if os.path.exists(icon_path):
         try:
@@ -1357,17 +1356,16 @@ def main():
             pass
     if TRAY_AVAILABLE:
         TRAY.start(window)
-    # Поток опроса запускается только ТЕПЕРЬ, после того как главное окно уже
-    # создано -- иначе первый же process_reset_alerts() мог вызвать
-    # raise_alert() раньше main-окна, и тогда webview.windows[0] оказался бы
-    # окном оповещений, а не главным (JsApi.close/minimize_to_tray/toggle_on_top
-    # все полагаются на windows[0] == главное окно).
+    # Start the polling thread only NOW, after the main window exists. Otherwise
+    # the first process_reset_alerts() could call raise_alert() before the main
+    # window is created, making webview.windows[0] the alert window. JsApi.close,
+    # minimize_to_tray, and toggle_on_top all assume windows[0] is the main window.
     threading.Thread(target=refresh_loop, daemon=True).start()
     webview.start(debug=False)
     STATE.shutdown_event.set()
     TRAY.stop()
-    # Не выход через X и не через трей (например, окно закрыли снаружи) --
-    # тогда геометрия ещё не записана и сохранится здесь. Иначе no-op.
+    # If this was not an exit through X or the tray (for example, an external
+    # close), geometry has not yet been saved, so save it here. Otherwise no-op.
     persist_window_geometry(window)
 
 

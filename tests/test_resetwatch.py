@@ -74,11 +74,11 @@ class TestDetect(unittest.TestCase):
         self.assertEqual(resetwatch.detect_resets(self.prev, nxt), [])
 
     def test_clock_jump_does_not_fabricate_an_event(self):
-        """Часы прыгнули вперёд на 2 ч, квота не менялась -- события нет.
+        """A two-hour clock jump with no quota change must not emit an event.
 
-        Отметка вычислена от now(), поэтому она уехала вместе с часами.
-        Без флага resets_at_derived это выглядело бы как сдвиг границы окна
-        и породило бы ложное оповещение о сбросе недельной квоты.
+        The timestamp was derived from now(), so it moved with the clock.
+        Without ``resets_at_derived``, this would look like a shifted window
+        boundary and produce a false weekly-quota-reset alert.
         """
         prev = {"codex": {"resets_at": 1000.0, "remaining_pct": 20.0,
                           "resets_at_derived": True}}
@@ -87,7 +87,7 @@ class TestDetect(unittest.TestCase):
         self.assertEqual(resetwatch.detect_resets(prev, nxt), [])
 
     def test_derived_timestamp_still_fires_on_a_pct_jump(self):
-        """Сигнал остатка на часах не завязан и для вычисленных отметок жив."""
+        """The balance signal is clock-independent and works for derived timestamps."""
         prev = {"codex": {"resets_at": 1000.0, "remaining_pct": 20.0,
                           "resets_at_derived": True}}
         nxt = {"codex": {"resets_at": 1000.0 + 7200, "remaining_pct": 100.0,
@@ -97,14 +97,14 @@ class TestDetect(unittest.TestCase):
         self.assertEqual(events[0]["to_pct"], 100.0)
 
     def test_one_derived_side_is_enough_to_drop_the_boundary_signal(self):
-        """Старое состояние с диска флага не имеет -- хватает нового."""
+        """A derived flag on the new reading alone disables the boundary signal."""
         prev = {"codex": {"resets_at": 1000.0, "remaining_pct": 20.0}}
         nxt = {"codex": {"resets_at": 1000.0 + 7200, "remaining_pct": 20.0,
                          "resets_at_derived": True}}
         self.assertEqual(resetwatch.detect_resets(prev, nxt), [])
 
     def test_absolute_timestamps_keep_the_boundary_signal(self):
-        """Гарантия не должна ослабнуть для окон с абсолютным resets_at."""
+        """Absolute ``resets_at`` windows must retain boundary detection."""
         prev = {"claude": {"resets_at": 1000.0, "remaining_pct": 20.0,
                            "resets_at_derived": False}}
         nxt = {"claude": {"resets_at": 1000.0 + 7200, "remaining_pct": 20.0,
@@ -179,7 +179,7 @@ class TestAlertStore(unittest.TestCase):
         self.assertTrue(s.last_save_ok)
 
     def test_save_failure_returns_false_instead_of_raising(self):
-        """Путь в несуществующий каталог: mkstemp падает, save() -- нет."""
+        """mkstemp may fail for a missing directory, but save() must not raise."""
         bad = os.path.join(self.dir.name, "no-such-dir", "state.json")
         log = os.path.join(self.dir.name, "widget-error.log")
         s = resetwatch.AlertStore(bad, log_path=log)
@@ -195,7 +195,7 @@ class TestAlertStore(unittest.TestCase):
         self.assertIn("save failed", line)
 
     def test_logging_failure_cannot_raise(self):
-        """Лог тоже может быть недоступен -- это не повод бросать наружу."""
+        """An unavailable log must not cause an exception to escape."""
         bad = os.path.join(self.dir.name, "no-such-dir", "state.json")
         bad_log = os.path.join(self.dir.name, "no-such-dir", "widget-error.log")
         s = resetwatch.AlertStore(bad, log_path=bad_log)
