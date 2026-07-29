@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Repo: `C:\Users\jeffs\bin\ai-usage-widget-src`, branch `overview-weekly`, remote `origin` = `github.com/jspicher/ai-usage-widget` (fork), `upstream` = `Trafalgardi/ai-usage-widget`.
+- Repo: `<repo>` (this checkout), branch `overview-weekly`, remote `origin` = the fork, `upstream` = `Trafalgardi/ai-usage-widget`.
 - This checkout is what the running widget loads. Restart the app to see changes.
 - Python is the project venv: `.\.venv\Scripts\python.exe`. Never use global `python`.
 - Run the app: `wscript.exe start_widget.vbs`. Stop it: `Get-Process pythonw | Stop-Process -Force`.
