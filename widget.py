@@ -553,10 +553,18 @@ def fetch_openrouter():
         result["error"] = "API ответил, но лимиты не найдены"
         return result
 
+    # total/used могут прийти нечисловыми (смена формата API) -- не роняем виджет.
+    try:
+        total = float(total)
+        used = float(used)
+    except (TypeError, ValueError):
+        result["error"] = "API ответил, но лимиты не найдены"
+        return result
+
     balance = {
-        "remaining_usd": round(float(total) - float(used), 2),
-        "total_usd": round(float(total), 2),
-        "used_usd": round(float(used), 2),
+        "remaining_usd": round(total - used, 2),
+        "total_usd": round(total, 2),
+        "used_usd": round(used, 2),
         "week_usd": None,
     }
     # Недельный расход и метка ключа не критичны: сбой здесь не роняет карточку.
