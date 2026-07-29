@@ -25,6 +25,8 @@ import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
+import resetwatch
+
 try:
     import pystray
     from PIL import Image, ImageDraw, ImageFont
@@ -38,6 +40,11 @@ CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 
 DEFAULT_CONFIG = {
     "refresh_interval_sec": 60,
+    "reset_alert": {
+        "enabled": True,
+        "pct_jump_threshold": 10,
+        "resets_at_advance_sec": 3600,
+    },
     "window": {"x": None, "y": None, "width": 380, "height": 600, "on_top": True},
     "opencode": {
         # Если у OpenCode появится/известен официальный usage-эндпоинт — впиши его сюда.
@@ -513,6 +520,10 @@ class State:
 STATE = State()
 CFG = load_config()
 
+ALERT_STATE_PATH = os.path.join(APP_DIR, "reset-alert-state.json")
+ALERTS = resetwatch.AlertStore(ALERT_STATE_PATH).load()
+_FIRST_COMPARE = True
+
 
 class TrayManager:
     def __init__(self):
@@ -690,6 +701,31 @@ class TrayManager:
 TRAY = TrayManager()
 
 
+def process_reset_alerts(providers):
+    """Сравнивает свежий снимок с базовой линией и копит оповещения."""
+    global _FIRST_COMPARE
+    cfg = CFG.get("reset_alert") or {}
+    new_readings = resetwatch.readings(providers)
+
+    if not cfg.get("enabled", True):
+        # Базовая линия обновляется всегда, чтобы повторное включение
+        # не выдало пачку старых сбросов.
+        ALERTS.merge_seen(new_readings)
+        if ALERTS.pending:
+            ALERTS.dismiss_all()
+        ALERTS.save()
+        _FIRST_COMPARE = False
+        return []
+
+    events = resetwatch.detect_resets(
+        ALERTS.seen, new_readings, cfg, while_away=_FIRST_COMPARE)
+    added = ALERTS.add(events)
+    ALERTS.merge_seen(new_readings)
+    ALERTS.save()
+    _FIRST_COMPARE = False
+    return added
+
+
 def refresh_all():
     if not STATE.refresh_lock.acquire(blocking=False):
         return
@@ -710,6 +746,10 @@ def refresh_all():
                                        "error": "Внутренняя ошибка:\n" + traceback.format_exc(limit=2)}
         with STATE.lock:
             STATE.snapshot = {"updated_at": time.time(), "providers": providers}
+        try:
+            process_reset_alerts(providers)
+        except Exception:
+            pass
         TRAY.update_tooltip()
         TRAY._update_icon_with_data()
     finally:
