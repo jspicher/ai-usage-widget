@@ -23,6 +23,7 @@ wheels/
 *.egg
 MANIFEST
 config.json
+reset-alert-state.json
 *.log
 .DS_Store
 Thumbs.db

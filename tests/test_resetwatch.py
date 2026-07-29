@@ -1,4 +1,7 @@
 import unittest
+import json
+import os
+import tempfile
 
 import resetwatch
 
@@ -90,6 +93,67 @@ class TestDetect(unittest.TestCase):
         a = resetwatch.event_id("claude", 8000.0, 100.0)
         b = resetwatch.event_id("claude", 9000.0, 100.0)
         self.assertNotEqual(a, b)
+
+
+class TestAlertStore(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.dir.name, "state.json")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_missing_file_loads_empty(self):
+        s = resetwatch.AlertStore(self.path).load()
+        self.assertEqual(s.seen, {})
+        self.assertEqual(s.pending, [])
+
+    def test_corrupt_file_loads_empty_instead_of_raising(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("{not json")
+        s = resetwatch.AlertStore(self.path).load()
+        self.assertEqual(s.seen, {})
+
+    def test_round_trip(self):
+        s = resetwatch.AlertStore(self.path).load()
+        s.merge_seen({"claude": {"resets_at": 1.0, "remaining_pct": 2.0}})
+        s.add([{"id": "abc", "provider": "claude"}])
+        s.save()
+        again = resetwatch.AlertStore(self.path).load()
+        self.assertEqual(again.seen["claude"]["remaining_pct"], 2.0)
+        self.assertEqual(len(again.pending), 1)
+
+    def test_save_leaves_no_temp_files(self):
+        s = resetwatch.AlertStore(self.path).load()
+        s.save()
+        self.assertEqual(os.listdir(self.dir.name), ["state.json"])
+
+    def test_merge_seen_preserves_absent_providers(self):
+        s = resetwatch.AlertStore(self.path).load()
+        s.merge_seen({"claude": {"resets_at": 1.0, "remaining_pct": 2.0},
+                      "codex": {"resets_at": 3.0, "remaining_pct": 4.0}})
+        s.merge_seen({"claude": {"resets_at": 9.0, "remaining_pct": 9.0}})
+        self.assertEqual(s.seen["codex"]["resets_at"], 3.0)
+        self.assertEqual(s.seen["claude"]["resets_at"], 9.0)
+
+    def test_add_dedupes_by_id(self):
+        s = resetwatch.AlertStore(self.path).load()
+        self.assertEqual(len(s.add([{"id": "x"}])), 1)
+        self.assertEqual(len(s.add([{"id": "x"}])), 0)
+        self.assertEqual(len(s.pending), 1)
+
+    def test_dismiss_removes_one(self):
+        s = resetwatch.AlertStore(self.path).load()
+        s.add([{"id": "x"}, {"id": "y"}])
+        self.assertTrue(s.dismiss("x"))
+        self.assertEqual([e["id"] for e in s.pending], ["y"])
+        self.assertFalse(s.dismiss("nope"))
+
+    def test_dismiss_all_clears(self):
+        s = resetwatch.AlertStore(self.path).load()
+        s.add([{"id": "x"}, {"id": "y"}])
+        self.assertEqual(s.dismiss_all(), 2)
+        self.assertEqual(s.pending, [])
 
 
 if __name__ == "__main__":

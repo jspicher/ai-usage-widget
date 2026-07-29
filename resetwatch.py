@@ -7,6 +7,9 @@
 
 import hashlib
 import time
+import json
+import os
+import tempfile
 
 WEEK_WINDOW_ID = "week"
 DEFAULT_PCT_JUMP = 10.0
@@ -80,3 +83,75 @@ def detect_resets(prev_readings, next_readings, cfg=None, while_away=False, now=
             "while_away": bool(while_away),
         })
     return events
+
+
+class AlertStore:
+    """Базовая линия показаний плюс неотклонённые оповещения, на диске.
+
+    Запись атомарная (временный файл + replace): падение в момент записи
+    не может испортить файл. Битый файл трактуется как отсутствующий.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self.seen = {}
+        self.pending = []
+
+    def load(self):
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            seen = data.get("seen")
+            pending = data.get("pending")
+            self.seen = seen if isinstance(seen, dict) else {}
+            self.pending = pending if isinstance(pending, list) else []
+        except Exception:
+            self.seen = {}
+            self.pending = []
+        return self
+
+    def save(self):
+        payload = {"seen": self.seen, "pending": self.pending}
+        folder = os.path.dirname(os.path.abspath(self.path)) or "."
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(dir=folder, prefix=".reset-alert-",
+                                       suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, self.path)
+            tmp = None
+        except Exception:
+            pass
+        finally:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+    def merge_seen(self, new_readings):
+        """Обновляет только присутствующие ключи.
+
+        Провайдер с ошибкой отсутствует в new_readings, и его базовая линия
+        должна сохраниться -- иначе восстановление после сбоя выглядело бы
+        как сброс квоты.
+        """
+        for pid, reading in (new_readings or {}).items():
+            self.seen[pid] = reading
+
+    def add(self, events):
+        known = {e.get("id") for e in self.pending}
+        fresh = [e for e in (events or []) if e.get("id") not in known]
+        self.pending.extend(fresh)
+        return fresh
+
+    def dismiss(self, alert_id):
+        before = len(self.pending)
+        self.pending = [e for e in self.pending if e.get("id") != alert_id]
+        return len(self.pending) != before
+
+    def dismiss_all(self):
+        count = len(self.pending)
+        self.pending = []
+        return count
