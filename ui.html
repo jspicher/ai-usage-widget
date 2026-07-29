@@ -64,6 +64,7 @@
   .strip .name{font-size:13px}
   .strip .pct{margin-left:auto; font-size:22px; font-weight:600}
   .strip .sub{display:flex; justify-content:space-between; font-size:10.5px; margin-top:2px}
+  .strip .bar + .sub{margin-top:8px}
   .bar{height:5px; border-radius:3px; margin-top:9px; overflow:hidden}
   .bar i{display:block; height:100%; border-radius:3px; transition:width .6s ease}
 
@@ -456,6 +457,17 @@ function asciiBar(pctRemaining, width=18){
 function sessionWin(p){
   return (p.windows||[]).find(w => w.id === "session") || (p.windows||[])[0] || null;
 }
+/* Окна для обзора: сессия + неделя (если есть) */
+function overviewWins(p){
+  const ws = p.windows || [];
+  const out = [];
+  const s = ws.find(w => w.id === "session");
+  if(s) out.push(s);
+  const wk = ws.find(w => w.id === "week");
+  if(wk) out.push(wk);
+  if(!out.length && ws[0]) out.push(ws[0]);
+  return out;
+}
 
 /* ---------- обзор ---------- */
 function renderOverview(){
@@ -464,24 +476,27 @@ function renderOverview(){
   let html = "";
   for(const id of ["claude","codex"]){
     const p = DATA.providers[id] || {};
-    const w = sessionWin(p);
+    const wins = overviewWins(p);
+    const w = wins[0] || null;
     const theme = THEME[id];
-    const low = w && w.remaining_pct != null && w.remaining_pct <= 15 ? "low" : "";
     html += `<div class="strip ${theme}" data-goto="${id}">
       <div class="top">
         <span class="glyph">${GLYPH[id]}</span>
         <span class="name">${esc(p.name || id)}</span>
         <span class="pct">${w ? pctText(w) + "<small style='font-size:11px;opacity:.5'>%</small>" : "—"}</span>
       </div>`;
-    if(w){
-      html += `<div class="sub">
-          <span>${esc(t(w.label))} · ${t("remaining")}</span>
-          <span>${w.resets_at ? t("resetsIn") + " " + fmtCountdown(w.resets_at) : ""}</span>
-        </div>`;
-      if(id === "opencode"){
-        html += `<div class="bar ${low}"><div class="asciibar ${low}">${asciiBar(w.remaining_pct)}</div></div>`;
-      } else {
-        html += `<div class="bar ${low}"><i style="width:${w.remaining_pct ?? 0}%"></i></div>`;
+    if(wins.length){
+      for(const win of wins){
+        const low = win.remaining_pct != null && win.remaining_pct <= 15 ? "low" : "";
+        html += `<div class="sub">
+            <span>${esc(t(win.label))} · ${t("remaining")}</span>
+            <span>${win.resets_at ? t("resetsIn") + " " + fmtCountdown(win.resets_at) : ""}</span>
+          </div>`;
+        if(id === "opencode"){
+          html += `<div class="bar ${low}"><div class="asciibar ${low}">${asciiBar(win.remaining_pct)}</div></div>`;
+        } else {
+          html += `<div class="bar ${low}"><i style="width:${win.remaining_pct ?? 0}%"></i></div>`;
+        }
       }
     } else {
       html += `<div class="err">${esc(terr(p.error) || t("noData"))}</div>`;

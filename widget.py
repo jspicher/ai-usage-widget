@@ -123,6 +123,13 @@ def pick(d, *keys):
     return None
 
 
+def primary_window(p):
+    """Окно для трея/тултипа: сессия, иначе первое доступное.
+    У Codex Pro сессионного окна нет — там только недельное."""
+    ws = p.get("windows") or []
+    return next((x for x in ws if x["id"] == "session"), None) or (ws[0] if ws else None)
+
+
 def make_window(win_id, label, used_pct=None, resets_at=None,
                 used_usd=None, limit_usd=None, extra=None):
     """Нормализованное окно лимита."""
@@ -319,15 +326,19 @@ def fetch_codex():
             secs = pick(obj, "resets_in_seconds", "reset_after_seconds")
             if secs is not None:
                 resets = time.time() + float(secs)
-        # длина окна помогает подписать: минуты
+        # длина окна помогает подписать: минуты или секунды (limit_window_seconds)
         mins = pick(obj, "window_minutes", "limit_window_minutes")
+        if mins is None:
+            win_secs = pick(obj, "limit_window_seconds", "window_seconds")
+            if win_secs:
+                mins = float(win_secs) / 60.0
         label = fallback_label
         if mins:
             mins = float(mins)
             if mins <= 6 * 60:
-                label = "Сессия (5 ч)"
+                label, wid = "Сессия (5 ч)", "session"
             elif mins >= 6.5 * 24 * 60:
-                label = "Неделя"
+                label, wid = "Неделя", "week"
         if pct is not None or resets is not None:
             result["windows"].append(make_window(wid, label, used_pct=pct, resets_at=resets))
 
@@ -538,7 +549,7 @@ class TrayManager:
         for pid in ["claude", "codex"]:
             p = snap["providers"].get(pid)
             if p and p.get("ok"):
-                w = next((x for x in p.get("windows", []) if x["id"] == "session"), None)
+                w = primary_window(p)
                 if w and w.get("remaining_pct") is not None:
                     result[pid] = round(w["remaining_pct"], 1)
         return result
@@ -619,7 +630,7 @@ class TrayManager:
             if not p or not p.get("ok"):
                 lines.append(f"{pname}: —")
                 continue
-            w = next((x for x in p.get("windows", []) if x["id"] == "session"), None)
+            w = primary_window(p)
             if not w or w.get("remaining_pct") is None:
                 lines.append(f"{pname}: —")
                 continue
