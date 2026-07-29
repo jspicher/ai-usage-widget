@@ -634,6 +634,51 @@ ALERTS_LOCK = threading.Lock()
 _FIRST_COMPARE = True
 
 
+# Геометрия сохраняется ровно один раз за жизнь процесса. Путей выхода два
+# (кнопка X и "Выход" в трее), и оба заканчиваются возвратом из
+# webview.start() в main() -- без флага один и тот же выход записал бы
+# конфиг дважды, причём второй раз уже по разрушенному окну.
+_GEOMETRY_LOCK = threading.Lock()
+_GEOMETRY_SAVED = False
+
+
+def persist_window_geometry(window):
+    """Запоминает позицию и размер главного окна. Идемпотентно."""
+    global _GEOMETRY_SAVED
+    with _GEOMETRY_LOCK:
+        if _GEOMETRY_SAVED:
+            return
+        _GEOMETRY_SAVED = True
+    try:
+        w = CFG["window"]
+        w["x"], w["y"] = window.x, window.y
+        # Only trust width/height if the startup chrome-shrink workaround
+        # confirmed success -- otherwise a failed resize would compound
+        # into a smaller window on every future launch (see _INITIAL_SIZE_OK).
+        if _INITIAL_SIZE_OK:
+            w["width"], w["height"] = window.width, window.height
+        save_config(CFG)
+    except Exception:
+        pass
+
+
+def shutdown_app():
+    """Единственный путь выхода: и кнопка X, и пункт "Выход" в трее.
+
+    Окно ОБЯЗАТЕЛЬНО разрушить: пока оно живо, webview.start() в main() не
+    вернётся, и после остановки трея процесс остаётся висеть с замороженным
+    виджетом поверх всех окон, без иконки в трее и без цикла опроса --
+    убить его можно только через диспетчер задач.
+    """
+    STATE.shutdown_event.set()
+    try:
+        win = webview.windows[0]
+        persist_window_geometry(win)
+        win.destroy()
+    except Exception:
+        os._exit(0)
+
+
 class TrayManager:
     def __init__(self):
         self.icon_claude = None
@@ -775,11 +820,11 @@ class TrayManager:
             self.window_ref.show()
 
     def _on_quit(self, icon, item):
-        STATE.shutdown_event.set()
-        if self.icon_claude:
-            self.icon_claude.stop()
-        if self.icon_codex:
-            self.icon_codex.stop()
+        # Ровно тот же путь, что и у кнопки X (JsApi.close): сохранить
+        # геометрию и разрушить окно. Иконки трея останавливает main() уже
+        # после возврата из webview.start() -- останавливать их здесь
+        # значило бы гасить трей раньше, чем закрылось окно.
+        shutdown_app()
 
     def _on_refresh(self, icon, item):
         threading.Thread(target=refresh_all, daemon=True).start()
@@ -1204,23 +1249,7 @@ class JsApi:
             return str(e)
 
     def close(self):
-        STATE.shutdown_event.set()
-        try:
-            win = webview.windows[0]
-            try:
-                w = CFG["window"]
-                w["x"], w["y"] = win.x, win.y
-                # Only trust width/height if the startup chrome-shrink workaround
-                # confirmed success -- otherwise a failed resize would compound
-                # into a smaller window on every future launch (see _INITIAL_SIZE_OK).
-                if _INITIAL_SIZE_OK:
-                    w["width"], w["height"] = win.width, win.height
-                save_config(CFG)
-            except Exception:
-                pass
-            win.destroy()
-        except Exception:
-            os._exit(0)
+        shutdown_app()
 
     def minimize_to_tray(self):
         if TRAY_AVAILABLE and TRAY.window_ref:
@@ -1302,20 +1331,15 @@ def main():
     threading.Thread(target=refresh_loop, daemon=True).start()
     webview.start(debug=False)
     STATE.shutdown_event.set()
-    if TRAY.icon_claude:
-        TRAY.icon_claude.stop()
-    if TRAY.icon_codex:
-        TRAY.icon_codex.stop()
-    try:
-        w = CFG["window"]
-        w["x"], w["y"] = window.x, window.y
-        # See _INITIAL_SIZE_OK note in JsApi.close() -- never persist a size we
-        # are not confident in.
-        if _INITIAL_SIZE_OK:
-            w["width"], w["height"] = window.width, window.height
-        save_config(CFG)
-    except Exception:
-        pass
+    for icon in (TRAY.icon_claude, TRAY.icon_codex):
+        if icon:
+            try:
+                icon.stop()
+            except Exception:
+                pass
+    # Не выход через X и не через трей (например, окно закрыли снаружи) --
+    # тогда геометрия ещё не записана и сохранится здесь. Иначе no-op.
+    persist_window_geometry(window)
 
 
 if __name__ == "__main__":
