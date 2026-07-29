@@ -598,6 +598,10 @@ class State:
 
 STATE = State()
 CFG = load_config()
+# Set True only once the startup window.resize() workaround (see main()) confirms
+# success. Guards against persisting a chrome-shrunken size on exit if that resize
+# ever fails -- see JsApi.close() and the exit block in main().
+_INITIAL_SIZE_OK = False
 
 ALERT_STATE_PATH = os.path.join(APP_DIR, "reset-alert-state.json")
 ALERTS = resetwatch.AlertStore(ALERT_STATE_PATH).load()
@@ -1186,7 +1190,11 @@ class JsApi:
             try:
                 w = CFG["window"]
                 w["x"], w["y"] = win.x, win.y
-                w["width"], w["height"] = win.width, win.height
+                # Only trust width/height if the startup chrome-shrink workaround
+                # confirmed success -- otherwise a failed resize would compound
+                # into a smaller window on every future launch (see _INITIAL_SIZE_OK).
+                if _INITIAL_SIZE_OK:
+                    w["width"], w["height"] = win.width, win.height
                 save_config(CFG)
             except Exception:
                 pass
@@ -1242,8 +1250,10 @@ def main():
     # shows the window), so it must run off the main thread, started before
     # webview.start() is called, not inline here.
     def _fix_initial_size():
+        global _INITIAL_SIZE_OK
         try:
             window.resize(w.get("width", 380), w.get("height", 400))
+            _INITIAL_SIZE_OK = True
         except Exception:
             pass
 
@@ -1279,7 +1289,10 @@ def main():
     try:
         w = CFG["window"]
         w["x"], w["y"] = window.x, window.y
-        w["width"], w["height"] = window.width, window.height
+        # See _INITIAL_SIZE_OK note in JsApi.close() -- never persist a size we
+        # are not confident in.
+        if _INITIAL_SIZE_OK:
+            w["width"], w["height"] = window.width, window.height
         save_config(CFG)
     except Exception:
         pass
