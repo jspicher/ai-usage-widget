@@ -60,6 +60,8 @@
   nav button.n-claude.active{color:var(--cl-accent); border-top-color:var(--cl-accent)}
   nav button.n-codex.active{border-top-color:#fff; color:#fff}
   nav button.n-opencode.active{color:var(--oc-accent); border-top-color:var(--oc-accent)}
+  nav button#nav-settings{flex:0 0 auto; padding:0 12px 0 10px; display:flex; align-items:center; justify-content:center; margin-left:auto}
+  nav button#nav-settings svg{width:15px; height:15px; display:block}
 
   /* ---------- обзор ---------- */
   .strip{padding:14px 16px 16px; border-bottom:1px solid rgba(0,0,0,.25); cursor:pointer}
@@ -246,7 +248,7 @@
     <button data-page="claude" class="n-claude">Claude</button>
     <button data-page="codex" class="n-codex">Codex</button>
     <button data-page="openrouter">OpenRouter</button>
-    <button data-page="settings" id="nav-settings">Настройки</button>
+    <button data-page="settings" id="nav-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Settings"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg></button>
   </nav>
 </div>
 
@@ -440,7 +442,11 @@ function updateTitles(){
   const lt = btn("loading-text");
   if(lt) lt.textContent = t("loadingData");
   if(btn("nav-overview")) btn("nav-overview").textContent = t("overview");
-  if(btn("nav-settings")) btn("nav-settings").textContent = t("settings");
+  const navSettings = btn("nav-settings");
+  if(navSettings){
+    navSettings.title = t("settings");
+    navSettings.setAttribute("aria-label", t("settings"));
+  }
 }
 
 /* Логотип OpenAI как inline SVG: не зависит от шрифта (⬡ U+2B21 рисовался как tofu) */
