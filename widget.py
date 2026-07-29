@@ -29,7 +29,7 @@ import resetwatch
 
 try:
     import pystray
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
     TRAY_AVAILABLE = True
 except ImportError:
     TRAY_AVAILABLE = False
@@ -149,11 +149,17 @@ def pick(d, *keys):
     return None
 
 
-def primary_window(p):
-    """Окно для трея/тултипа: сессия, иначе первое доступное.
-    У Codex Pro сессионного окна нет — там только недельное."""
+def tooltip_window(p):
+    """Окно для подсказки в трее: недельное, иначе сессия, иначе первое.
+
+    Именно недельное: подсказка должна говорить о том же лимите, о котором
+    предупреждает окно сброса, а у Codex Pro сессионного окна и вовсе нет —
+    там только недельное. Раньше здесь шла сессия, и Claude показывал
+    пятичасовой лимит рядом с недельным лимитом Codex."""
     ws = p.get("windows") or []
-    return next((x for x in ws if x["id"] == "session"), None) or (ws[0] if ws else None)
+    return (next((x for x in ws if x["id"] == "week"), None)
+            or next((x for x in ws if x["id"] == "session"), None)
+            or (ws[0] if ws else None))
 
 
 def make_window(win_id, label, used_pct=None, resets_at=None,
@@ -693,83 +699,83 @@ def shutdown_app():
 
 
 class TrayManager:
+    """Одна статическая иконка в трее, а не по иконке на провайдера.
+
+    Раньше на каждого провайдера создавалась своя иконка с процентами,
+    нарисованными текстом поверх пустого квадрата. Их было две, они
+    плодились в трее и вдобавок исчезали, стоило провайдеру ответить
+    ошибкой. Теперь иконка одна, статическая (логотип приложения), живёт
+    от старта до выхода, а цифры переехали в подсказку.
+    """
+
+    # Windows держит подсказку в szTip: 128 wchar вместе с нулём.
+    TOOLTIP_MAX = 127
+
     def __init__(self):
-        self.icon_claude = None
-        self.icon_codex = None
+        self.icon = None
         self.window_ref = None
         self._thread = None
 
-    def _create_icon_image(self, text="", color="#FFFFFF", outline=None, bg_color=None):
-        size = 64
-        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        
+    def _load_icon_image(self):
+        path = os.path.join(APP_DIR, "icon", "512.png")
         try:
-            font = ImageFont.truetype("arialbd.ttf", 48)
+            with Image.open(path) as src:
+                return src.convert("RGBA").resize((64, 64), Image.LANCZOS)
         except Exception:
-            try:
-                font = ImageFont.truetype("arial.ttf", 48)
-            except Exception:
-                font = ImageFont.load_default()
-        
-        if text:
-            if outline:
-                draw.text((size//2, size//2), text, fill=color, font=font, anchor="mm", stroke_width=3, stroke_fill=outline)
-            else:
-                draw.text((size//2, size//2), text, fill=color, font=font, anchor="mm")
-        
-        return img
+            # Без файла иконки трей всё равно обязан подняться.
+            img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            ImageDraw.Draw(img).ellipse((4, 4, 59, 59), outline="#1E90FF", width=6)
+            return img
 
-    def _get_session_pcts(self):
+    def _build_tooltip(self):
         with STATE.lock:
             snap = copy.deepcopy(STATE.snapshot)
-        result = {}
-        for pid in ["claude", "codex"]:
+        if not snap.get("updated_at"):
+            return "AI Usage Widget"
+
+        lang = (CFG.get("language") or "en")[:2]
+        hu = "h" if lang == "en" else "ч"
+        mu = "m" if lang == "en" else "м"
+        reset_label = "resets in" if lang == "en" else "сброс"
+
+        lines = ["AI Usage Widget"]
+        for pid, pname in [("claude", "Claude"), ("codex", "Codex")]:
             p = snap["providers"].get(pid)
-            if p and p.get("ok"):
-                w = primary_window(p)
-                if w and w.get("remaining_pct") is not None:
-                    result[pid] = round(w["remaining_pct"], 1)
-        return result
-
-    def _update_icon_with_data(self):
-        pcts = self._get_session_pcts()
-        providers = {"claude": "Claude Code", "codex": "Codex CLI"}
-        icon_attrs = {"claude": "icon_claude", "codex": "icon_codex"}
-        thread_attrs = {"claude": "_thread_claude", "codex": "_thread_codex"}
-        
-        for pid, pname in providers.items():
-            pct = pcts.get(pid)
-            has_data = pct is not None
-            icon = getattr(self, icon_attrs[pid], None)
-            
-            if has_data:
-                text = f"{int(pct):02d}"
-                if pid == "claude":
-                    img = self._create_icon_image(text, color="#D97757")
-                else:
-                    img = self._create_icon_image(text, color="#2ECC40", outline="#1a7a25")
-                if icon:
-                    # Обновляем существующую иконку
-                    try:
-                        icon.icon = img
-                        icon.title = self._build_tooltip()
-                    except Exception:
-                        pass
-                else:
-                    # Создаём новую иконку
-                    self._create_tray_icon(pid, pname, img)
+            w = tooltip_window(p) if (p and p.get("ok")) else None
+            if not w or w.get("remaining_pct") is None:
+                lines.append("%s: —" % pname)
+                continue
+            # %g, а не %s: round(18.0, 1) печатается как "18.0", а окно
+            # рисует "18" -- подсказка не должна расходиться с карточкой.
+            pct = "%g" % round(w["remaining_pct"], 1)
+            resets = w.get("resets_at")
+            if resets:
+                secs = max(0, int(resets - time.time()))
+                h, rem = divmod(secs, 3600)
+                m = rem // 60
+                reset_str = "%d%s %d%s" % (h, hu, m, mu) if h > 0 else "%d%s" % (m, mu)
+                lines.append("%s: %s%% (%s %s)" % (pname, pct, reset_label, reset_str))
             else:
-                if icon:
-                    # Останавливаем и прячем иконку
-                    try:
-                        icon.stop()
-                    except Exception:
-                        pass
-                    setattr(self, icon_attrs[pid], None)
-                    setattr(self, thread_attrs[pid], None)
+                lines.append("%s: %s%%" % (pname, pct))
 
-    def _create_tray_icon(self, pid, pname, img):
+        # OpenRouter -- это баланс, а не окно: ни процентов, ни сброса.
+        p = snap["providers"].get("openrouter")
+        rem_usd = None
+        if p and p.get("ok"):
+            rem_usd = ((p.get("meta") or {}).get("balance") or {}).get("remaining_usd")
+        if rem_usd is None:
+            lines.append("OpenRouter: —")
+        else:
+            lines.append("OpenRouter: $%.2f" % rem_usd)
+
+        return "\n".join(lines)[:self.TOOLTIP_MAX]
+
+    def start(self, window):
+        if not TRAY_AVAILABLE:
+            return
+        self.window_ref = window
+        if self.icon is not None:
+            return
         lang = (CFG.get("language") or "en")[:2]
         labels = {
             "show": "Show" if lang == "en" else "Показать",
@@ -782,51 +788,31 @@ class TrayManager:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(labels["exit"], self._on_quit),
         )
-        name = f"ai-usage-{pid}"
-        title = pname
-        icon = pystray.Icon(name, img, title, menu)
-        t = threading.Thread(target=icon.run, daemon=True)
-        t.start()
-        if pid == "claude":
-            self.icon_claude = icon
-            self._thread_claude = t
-        else:
-            self.icon_codex = icon
-            self._thread_codex = t
+        self.icon = pystray.Icon(
+            "ai-usage", self._load_icon_image(), self._build_tooltip(), menu)
+        self._thread = threading.Thread(target=self.icon.run, daemon=True)
+        self._thread.start()
 
-    def start(self, window):
-        if not TRAY_AVAILABLE:
+    def update_tooltip(self):
+        # Подсказка -- косметика, и уронить ею опрос данных нельзя: ровно
+        # так этот трей и молчал, пока _build_tooltip не существовал вовсе.
+        icon = self.icon
+        if icon is None:
             return
-        self.window_ref = window
-        with STATE.lock:
-            snap = copy.deepcopy(STATE.snapshot)
-        if not snap.get("updated_at"):
-            return "AI Usage Widget"
-        lines = ["AI Usage Widget"]
-        for pid, pname in [("claude", "Claude"), ("codex", "Codex")]:
-            p = snap["providers"].get(pid)
-            if not p or not p.get("ok"):
-                lines.append(f"{pname}: —")
-                continue
-            w = primary_window(p)
-            if not w or w.get("remaining_pct") is None:
-                lines.append(f"{pname}: —")
-                continue
-            pct = round(w["remaining_pct"], 1)
-            resets = w.get("resets_at")
-            if resets:
-                secs = max(0, int(resets - time.time()))
-                h, rem = divmod(secs, 3600)
-                m = rem // 60
-                lang = (CFG.get("language") or "en")[:2]
-                hu = "h" if lang == "en" else "ч"
-                mu = "m" if lang == "en" else "м"
-                reset_label = "resets in" if lang == "en" else "сброс"
-                reset_str = f"{h}{hu} {m}{mu}" if h > 0 else f"{m}{mu}"
-                lines.append(f"{pname}: {pct}% ({reset_label} {reset_str})")
-            else:
-                lines.append(f"{pname}: {pct}%")
-        return "\n".join(lines)
+        try:
+            icon.title = self._build_tooltip()
+        except Exception:
+            pass
+
+    def stop(self):
+        icon = self.icon
+        if icon is None:
+            return
+        self.icon = None
+        try:
+            icon.stop()
+        except Exception:
+            pass
 
     def _on_show(self, icon, item):
         if self.window_ref:
@@ -834,31 +820,13 @@ class TrayManager:
 
     def _on_quit(self, icon, item):
         # Ровно тот же путь, что и у кнопки X (JsApi.close): сохранить
-        # геометрию и разрушить окно. Иконки трея останавливает main() уже
-        # после возврата из webview.start() -- останавливать их здесь
+        # геометрию и разрушить окно. Иконку трея останавливает main() уже
+        # после возврата из webview.start() -- останавливать её здесь
         # значило бы гасить трей раньше, чем закрылось окно.
         shutdown_app()
 
     def _on_refresh(self, icon, item):
         threading.Thread(target=refresh_all, daemon=True).start()
-
-    def start(self, window):
-        if not TRAY_AVAILABLE:
-            return
-        self.window_ref = window
-
-    def update_tooltip(self):
-        tooltip = self._build_tooltip()
-        if self.icon_claude:
-            try:
-                self.icon_claude.title = tooltip
-            except Exception:
-                pass
-        if self.icon_codex:
-            try:
-                self.icon_codex.title = tooltip
-            except Exception:
-                pass
 
     def hide_window(self):
         if self.window_ref:
@@ -981,7 +949,7 @@ class AlertWindowManager:
         """Дополнение к окну, а не замена: системный тост сам исчезнет."""
         if not events or not TRAY_AVAILABLE:
             return
-        icon = TRAY.icon_claude or TRAY.icon_codex
+        icon = TRAY.icon
         if icon is None:
             return
         names = {"claude": "Claude Code", "codex": "Codex CLI"}
@@ -1068,7 +1036,6 @@ def refresh_all():
         except Exception:
             pass
         TRAY.update_tooltip()
-        TRAY._update_icon_with_data()
     finally:
         STATE.refresh_lock.release()
 
@@ -1323,8 +1290,10 @@ class JsApi:
         return False
 
     def update_tray_icon(self):
+        # Сама иконка статическая: обновлять в ней нечего, кроме подсказки.
+        # Имя метода оставлено -- его зовёт ui.html на каждом опросе.
         if TRAY_AVAILABLE and TRAY.window_ref:
-            TRAY._update_icon_with_data()
+            TRAY.update_tooltip()
             return True
         return False
 
@@ -1396,12 +1365,7 @@ def main():
     threading.Thread(target=refresh_loop, daemon=True).start()
     webview.start(debug=False)
     STATE.shutdown_event.set()
-    for icon in (TRAY.icon_claude, TRAY.icon_codex):
-        if icon:
-            try:
-                icon.stop()
-            except Exception:
-                pass
+    TRAY.stop()
     # Не выход через X и не через трей (например, окно закрыли снаружи) --
     # тогда геометрия ещё не записана и сохранится здесь. Иначе no-op.
     persist_window_geometry(window)

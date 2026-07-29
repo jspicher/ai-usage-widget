@@ -60,10 +60,18 @@ The widget watches each provider's weekly window and raises a dedicated alert wi
 
 Minimize the app to the Windows system tray while it continues updating in the background.
 
-- Orange percentage icon -- Claude Code
-- Green percentage icon -- Codex CLI
-- Hover for detailed usage information
+- **One static icon** -- the app icon, not one icon per provider. Upstream drew the remaining
+  percentage as text onto a separate icon for each of Claude and Codex, so the tray collected two
+  numbered squares that also vanished whenever a provider returned an error. The tray now holds a
+  single icon that stays put from launch until exit.
+- Hover for per-provider detail: each provider's **weekly** remaining percentage and reset
+  countdown, plus the OpenRouter balance. The tooltip reports the same window the reset alert
+  watches, so the two never disagree.
 - Right-click to show, refresh, or exit
+
+Because the tray icon is registered under a new name, Windows may place it behind the overflow
+chevron the first time you run this version. Drag it onto the taskbar once and Windows will
+remember.
 
 ### Quick login
 
@@ -196,7 +204,11 @@ Codex's API reports a rate-limit window's length as `limit_window_seconds`, but 
 
 ### Python icon instead of the app icon
 
-Restart the application. The icon is applied after window creation.
+Upstream shipped no `icon/app.ico`, so the window-icon code found nothing to load and the taskbar
+button and Alt-Tab entry fell back to the Python feather. Restarting never helped. This fork
+generates `icon/app.ico` from `icon/512.png` and commits it, so the same icon now appears in the
+tray, the taskbar, and Alt-Tab. If you build from a clean checkout and the feather returns, confirm
+`icon/app.ico` is present -- the PyInstaller command below also references it twice.
 
 ## Frequently asked questions
 
