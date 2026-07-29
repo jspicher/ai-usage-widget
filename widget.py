@@ -1184,7 +1184,9 @@ class JsApi:
         try:
             win = webview.windows[0]
             try:
-                CFG["window"]["x"], CFG["window"]["y"] = win.x, win.y
+                w = CFG["window"]
+                w["x"], w["y"] = win.x, win.y
+                w["width"], w["height"] = win.width, win.height
                 save_config(CFG)
             except Exception:
                 pass
@@ -1257,7 +1259,9 @@ def main():
     if TRAY.icon_codex:
         TRAY.icon_codex.stop()
     try:
-        CFG["window"]["x"], CFG["window"]["y"] = window.x, window.y
+        w = CFG["window"]
+        w["x"], w["y"] = window.x, window.y
+        w["width"], w["height"] = window.width, window.height
         save_config(CFG)
     except Exception:
         pass
