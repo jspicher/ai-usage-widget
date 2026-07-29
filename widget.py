@@ -171,7 +171,7 @@ CLAUDE_USAGE_URLS = [
 
 
 def fetch_claude():
-    result = {"id": "claude", "name": "Claude Code", "ok": False,
+    result = {"id": "claude", "name": "Claude Code", "kind": "windows", "ok": False,
               "windows": [], "meta": {}, "error": None}
     token = None
     cred_file = None
@@ -265,7 +265,7 @@ def _jwt_claims(jwt):
 
 
 def fetch_codex():
-    result = {"id": "codex", "name": "Codex CLI", "ok": False,
+    result = {"id": "codex", "name": "Codex CLI", "kind": "windows", "ok": False,
               "windows": [], "meta": {}, "error": None}
     auth_path = os.path.join(_codex_home(), "auth.json")
     if not os.path.exists(auth_path):
@@ -502,6 +502,76 @@ def fetch_opencode(cfg):
         "впиши его в config.json → opencode.usage_endpoint."
         + (f" (последняя ошибка: {last_err})" if last_err else ""))
     result["meta"]["console_url"] = "https://opencode.ai"
+    return result
+
+
+OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
+OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
+
+
+def _openrouter_key():
+    """Ключ из окружения, затем из config.json. Приложение ключ не пишет."""
+    key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+    if key:
+        return key, "env"
+    key = ((CFG.get("openrouter") or {}).get("api_key") or "").strip()
+    if key:
+        return key, "config.json"
+    return None, None
+
+
+def fetch_openrouter():
+    result = {"id": "openrouter", "name": "OpenRouter", "kind": "balance",
+              "ok": False, "windows": [], "meta": {}, "error": None}
+    key, source = _openrouter_key()
+    result["meta"]["key_source"] = source
+    if not key:
+        result["error"] = "Не задан OPENROUTER_API_KEY"
+        return result
+
+    headers = {
+        "Authorization": "Bearer " + key,
+        "Accept": "application/json",
+        "User-Agent": "ai-usage-widget/1.0",
+    }
+    try:
+        data = http_get_json(OPENROUTER_CREDITS_URL, headers) or {}
+    except urllib.error.HTTPError as e:
+        msg = "HTTP %s" % e.code
+        if e.code in (401, 403):
+            msg += " -- ключ отклонён. Проверь OPENROUTER_API_KEY."
+        result["error"] = msg
+        return result
+    except Exception as e:
+        result["error"] = "%s: %s" % (type(e).__name__, e)
+        return result
+
+    credits = data.get("data") or {}
+    total = pick(credits, "total_credits")
+    used = pick(credits, "total_usage")
+    if total is None or used is None:
+        result["error"] = "API ответил, но лимиты не найдены"
+        return result
+
+    balance = {
+        "remaining_usd": round(float(total) - float(used), 2),
+        "total_usd": round(float(total), 2),
+        "used_usd": round(float(used), 2),
+        "week_usd": None,
+    }
+    # Недельный расход и метка ключа не критичны: сбой здесь не роняет карточку.
+    try:
+        key_data = (http_get_json(OPENROUTER_KEY_URL, headers) or {}).get("data") or {}
+        weekly = key_data.get("usage_weekly")
+        if weekly is not None:
+            balance["week_usd"] = round(float(weekly), 2)
+        result["meta"]["label"] = key_data.get("label")
+    except Exception:
+        pass
+
+    result["meta"]["balance"] = balance
+    result["meta"]["key_masked"] = (key[:8] + "…" + key[-4:]) if len(key) > 14 else "…"
+    result["ok"] = True
     return result
 
 
@@ -862,10 +932,11 @@ def refresh_all():
         return
     try:
         providers = {}
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
                 executor.submit(fetch_claude): "claude",
                 executor.submit(fetch_codex): "codex",
+                executor.submit(fetch_openrouter): "openrouter",
             }
             for future in as_completed(futures):
                 name = futures[future]
