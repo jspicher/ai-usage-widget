@@ -212,9 +212,11 @@ class TestConfig(WidgetTestCase):
             })
             widget.CONFIG_HEALTH = healthy_config_state()
             widget.STATE = widget.State()
+            # "***" is what a masked field would echo back. The section is not
+            # UI-writable at all, so this must never reach the real key.
             result = widget.JsApi().save_config_api({
                 "language": "ru",
-                "openrouter": {"api_key": widget.REDACTED},
+                "openrouter": {"api_key": "***"},
             })
             self.assertTrue(result["ok"])
             with open(path, "r", encoding="utf-8") as f:
@@ -301,7 +303,6 @@ class TestCredentials(unittest.TestCase):
             "token": "do-not-leak",
             "subscription": "max",
             "expires_at": 1_900_000_000,
-            "source": "credentials.json",
         }
         response = {
             "seven_day": {

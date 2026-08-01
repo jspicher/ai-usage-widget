@@ -22,14 +22,13 @@
   .row .away{display:inline-block; margin-top:5px; font-size:9.5px; letter-spacing:.04em;
              text-transform:uppercase; background:#2b2410; color:#f5a623;
              border-radius:4px; padding:2px 6px}
-  .row .btn{margin-top:9px; width:100%; padding:6px 0; font-size:11px; cursor:pointer;
-            background:#26262c; color:#ececf1; border:1px solid #33333a; border-radius:6px}
-  .row .btn:hover{background:#2f2f36}
+  .btn{font-size:11px; cursor:pointer; background:#26262c; color:#ececf1;
+       border:1px solid #33333a; border-radius:6px}
+  .btn:hover{background:#2f2f36}
+  .row .btn{margin-top:9px; width:100%; padding:6px 0}
   .empty{text-align:center; padding:18px 0}
   .empty .empty-text{opacity:.5; margin-bottom:12px}
-  .empty .btn{width:auto; padding:6px 24px; font-size:11px; cursor:pointer;
-              background:#26262c; color:#ececf1; border:1px solid #33333a; border-radius:6px}
-  .empty .btn:hover{background:#2f2f36}
+  .empty .btn{width:auto; padding:6px 24px}
 </style>
 </head>
 <body>
@@ -42,7 +41,6 @@
   <div id="rows"></div>
 </div>
 <script>
-const NAMES = {claude:"Claude Code", codex:"Codex CLI"};
 let LANG = "en";
 const L10N = {
   en: {
@@ -109,7 +107,7 @@ async function renderAlerts(){
   }
   rows.innerHTML = alerts.map(a => `
     <div class="row">
-      <div class="who">${esc(NAMES[a.provider] || a.provider)}</div>
+      <div class="who">${esc(a.provider_name || a.provider)}</div>
       <div class="delta">${esc(t("weeklyChange", {
         from:Math.round(a.from_pct), to:Math.round(a.to_pct)
       }))}</div>

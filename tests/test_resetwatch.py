@@ -2,6 +2,7 @@ import unittest
 import json
 import os
 import tempfile
+from unittest import mock
 
 import resetwatch
 
@@ -200,6 +201,28 @@ class TestAlertStore(unittest.TestCase):
         bad_log = os.path.join(self.dir.name, "no-such-dir", "widget-error.log")
         s = resetwatch.AlertStore(bad, log_path=bad_log)
         self.assertIs(s.save(), False)
+
+    def test_unchanged_state_does_not_rewrite(self):
+        """save() runs every poll; an idle machine must not fsync every time."""
+        s = resetwatch.AlertStore(self.path).load()
+        with mock.patch.object(resetwatch, "atomic_write_json") as write:
+            self.assertTrue(s.save())
+            self.assertTrue(s.save())
+            self.assertEqual(write.call_count, 1)
+            s.add([{"id": "x"}])
+            self.assertTrue(s.save())
+            self.assertEqual(write.call_count, 2)
+
+    def test_failed_write_is_retried_on_the_next_save(self):
+        """A skipped write must never be skipped because the last one failed."""
+        s = resetwatch.AlertStore(self.path).load()
+        s.add([{"id": "x"}])
+        with mock.patch.object(
+                resetwatch, "atomic_write_json", side_effect=OSError("boom")):
+            self.assertFalse(s.save())
+        with mock.patch.object(resetwatch, "atomic_write_json") as write:
+            self.assertTrue(s.save())
+            write.assert_called_once()
 
     def test_save_recovers_after_a_failure(self):
         s = resetwatch.AlertStore(self.path).load()

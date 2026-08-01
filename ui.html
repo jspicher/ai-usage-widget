@@ -116,7 +116,6 @@
   /* OpenRouter strip / page */
   .th-openrouter{background:#141419}
   .th-openrouter .glyph{color:#8b7cf6}
-  .th-openrouter .bar i{background:#8b7cf6}
 
   .strip .err{font-size:10.5px; margin-top:6px; opacity:.75; line-height:1.4}
 
@@ -213,7 +212,6 @@
     align-items:center; justify-content:center; gap:12px; z-index:100;
     background:var(--shell);
   }
-  .loading-overlay.hidden{display:none}
   .loading-spinner{
     width:32px; height:32px;
     border:3px solid #2a2a2e; border-top-color:#d97757;
@@ -242,7 +240,7 @@
     <div class="page active" id="page-overview">
       <div class="loading-overlay" id="loading">
         <div class="loading-spinner"></div>
-        <div class="loading-text" id="loading-text">Загрузка данных…</div>
+        <div class="loading-text" id="loading-text">Loading data…</div>
       </div>
     </div>
     <div class="page" id="page-claude"></div>
@@ -252,7 +250,7 @@
   </div>
 
   <nav>
-    <button data-page="overview" class="active" id="nav-overview">Обзор</button>
+    <button data-page="overview" class="active" id="nav-overview">Overview</button>
     <button data-page="claude" class="n-claude">Claude</button>
     <button data-page="codex" class="n-codex">Codex</button>
     <button data-page="openrouter">OpenRouter</button>
@@ -442,14 +440,10 @@ function template(text, params={}){
     Object.prototype.hasOwnProperty.call(params, key) ? String(params[key]) : "");
 }
 
-// Structured errors are localized by code. Strings remain a compatibility path.
+// Every error crossing the bridge is an error_info() object or null -- see
+// widget.py. Localize by code and interpolate the params it carries.
 function terr(value){
   if(!value) return "";
-  if(typeof value === "string"){
-    const translated = t(value);
-    return translated !== value ? translated : value;
-  }
-  if(typeof value !== "object") return t("errorGeneric");
   const key = "error_" + String(value.code || "");
   const translated = t(key);
   let message = translated === key
@@ -561,7 +555,7 @@ function cycleDayDot(win){
   return `<span class="cycle-day-dot" style="left:${left}%" aria-hidden="true"></span>`;
 }
 
-function usageBar(win, low){
+function usageBar(win){
   const weekly = isWeeklyWindow(win);
   const showMarkers = weekly && DATA?._config?.display?.daily_markers !== false;
   const markers = showMarkers
@@ -570,7 +564,8 @@ function usageBar(win, low){
       ).join("")
     : "";
   const cycleDot = showMarkers ? cycleDayDot(win) : "";
-  return `<div class="bar ${low || ""} ${weekly ? "weekly-bar" : ""}">
+  const low = win.remaining_pct != null && win.remaining_pct <= 15 ? "low" : "";
+  return `<div class="bar ${low}">
     <i style="width:${win.remaining_pct ?? 0}%"></i>${markers}${cycleDot}</div>`;
 }
 
@@ -580,13 +575,14 @@ function renderOverview(){
   if(!DATA){ el.innerHTML = `<div class='empty'>${t("loading")}</div>`; return; }
   let html = "";
   for(const id of PROVIDER_IDS){
-    if(!DATA.providers[id]) continue;
-    const p = DATA.providers[id] || {};
-    const balance = p.kind === "balance" ? ((p.meta && p.meta.balance) || null) : null;
-    const wins = p.kind === "balance" ? [] : overviewWins(p);
+    const p = DATA.providers[id];
+    if(!p) continue;
+    const isBalance = p.kind === "balance";
+    const balance = isBalance ? ((p.meta && p.meta.balance) || null) : null;
+    const wins = isBalance ? [] : overviewWins(p);
     const w = wins[0] || null;
     // Both kinds share the header; only the headline figure differs.
-    const headline = p.kind === "balance"
+    const headline = isBalance
       ? (balance ? usd(balance.remaining_usd) : "—")
       : (w ? pctText(w) + "<small style='font-size:11px;opacity:.5'>%</small>" : "—");
     html += `<button type="button" class="strip ${THEME[id]}" data-goto="${id}" aria-label="${esc(p.name || id)}">
@@ -602,12 +598,11 @@ function renderOverview(){
         </div>`;
     } else if(wins.length){
       for(const win of wins){
-        const low = win.remaining_pct != null && win.remaining_pct <= 15 ? "low" : "";
         html += `<div class="sub">
             <span>${esc(t(win.label))} · ${win.remaining_pct != null ? pctText(win) + "% " : ""}${t("remaining")}</span>
             <span>${win.resets_at ? t("resetsIn") + " " + fmtCountdown(win.resets_at) : ""}</span>
           </div>`;
-        html += usageBar(win, low);
+        html += usageBar(win);
       }
     } else {
       html += `<div class="err">${esc(terr(p.error) || t("noData"))}</div>`;
@@ -653,13 +648,12 @@ function renderDetail(id){
     <div class="plan">${esc(p.meta && (p.meta.plan || p.meta.subscription) || t("subscription"))}</div>`;
 
   for(const w of (p.windows || [])){
-    const low = w.remaining_pct != null && w.remaining_pct <= 15 ? "low" : "";
     html += `<div class="win">
       <div class="head">
         <span class="label">${esc(t(w.label))}</span>
         <span class="bigpct">${pctText(w)}<small> % ${t("remaining")}</small></span>
       </div>`;
-    html += usageBar(w, low);
+    html += usageBar(w);
     if(w.resets_at){
       html += `<div class="reset">
         <span>${t("resetsIn")} ${fmtCountdown(w.resets_at)}</span>
@@ -716,13 +710,13 @@ function renderDetail(id){
 }
 
 function renderAll(){
+  // This replaces #page-overview wholesale, which discards the startup spinner
+  // along with it -- no explicit hide step is needed.
   renderOverview();
   for(const id of PROVIDER_IDS) renderDetail(id);
   renderSettings();
   if(DATA && DATA.updated_at){
     $("#updated").textContent = t("updated") + " " + fmtClock(DATA.updated_at);
-    const loading = $("#loading");
-    if(loading) loading.classList.add("hidden");
   }
 }
 
@@ -730,12 +724,15 @@ let settingsMounted = false;
 let settingsDirty = false;
 let settingsRenderedLang = null;
 
+// cfg is always a normalized _config, so normalize_config has already
+// guaranteed every key -- restating Python's defaults here would just be a
+// second copy free to drift.
 function syncSettingsControls(cfg){
   if(!cfg || settingsDirty) return;
-  $("#cfg-refresh").value = cfg.refresh_interval_sec ?? 300;
-  $("#cfg-lang").value = cfg.language || "en";
-  $("#cfg-width").value = cfg.window?.width ?? 380;
-  $("#cfg-height").value = cfg.window?.height ?? 400;
+  $("#cfg-refresh").value = cfg.refresh_interval_sec;
+  $("#cfg-lang").value = cfg.language;
+  $("#cfg-width").value = cfg.window.width;
+  $("#cfg-height").value = cfg.window.height;
   $("#cfg-ontop").checked = cfg.window?.on_top !== false;
   $("#cfg-day-markers").checked = cfg.display?.daily_markers !== false;
   $("#cfg-alert").checked = cfg.reset_alert?.enabled !== false;
@@ -864,12 +861,15 @@ function mountSettings(cfg){
     const saveButton = $("#btn-save-settings");
     const message = $("#saved-msg");
     const lang = $("#cfg-lang")?.value || LANG;
+    // An empty field parses to NaN, serializes as null, and normalize_config
+    // substitutes the real default and clamps it -- so no default is restated
+    // on this side either.
     const newCfg = {
       language: lang,
-      refresh_interval_sec: parseInt($("#cfg-refresh").value, 10) || 300,
+      refresh_interval_sec: parseInt($("#cfg-refresh").value, 10),
       window: {
-        width: parseInt($("#cfg-width").value, 10) || 380,
-        height: parseInt($("#cfg-height").value, 10) || 400,
+        width: parseInt($("#cfg-width").value, 10),
+        height: parseInt($("#cfg-height").value, 10),
         on_top: $("#cfg-ontop").checked,
       },
       display: { daily_markers: $("#cfg-day-markers").checked },
@@ -963,9 +963,7 @@ async function pull(isManual = false){
       DATA = snap;
       pullInterval = (snap.refresh_interval_sec || 300) * 1000;
       const oldLang = LANG;
-      if(!LANG || (DATA._config && DATA._config.language && DATA._config.language !== LANG)){
-        LANG = (DATA._config && DATA._config.language) || "en";
-      }
+      LANG = DATA._config?.language || LANG;
       if(oldLang !== LANG) updateTitles();
       // Reset the timer after a real data update or a manual refresh.
       const changed = isManual || snap.updated_at !== lastUpdatedAt;
@@ -989,7 +987,13 @@ async function pull(isManual = false){
   }catch(e){ /* The backend is still starting. */ }
 }
 
+// Guarded because demo mode dispatches a second pywebviewready if its 800ms
+// timer loses the race with a slow backend injection. Without this, every
+// interval below would be registered twice for the process lifetime.
+let bootstrapped = false;
 window.addEventListener("pywebviewready", () => {
+  if(bootstrapped) return;
+  bootstrapped = true;
   pull();
   setInterval(() => pull(false), 5000);
   // Redraw between backend refreshes so the "resets in" countdowns advance.
@@ -1047,7 +1051,9 @@ window.addEventListener("pywebviewready", () => {
 
 // Demo mode when the file is opened in a browser without pywebview.
 setTimeout(() => {
-  if(window.pywebview) return;
+  // bootstrapped covers the case where the real backend arrived and already
+  // fired its event; window.pywebview alone is a race, not a proof.
+  if(window.pywebview || bootstrapped) return;
   clockSkew = 0;
   const demoParams = new URLSearchParams(window.location.search);
   DATA = {

@@ -14,11 +14,11 @@ Dependencies: pip install -r requirements.txt
 import base64
 import copy
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.request
@@ -68,9 +68,11 @@ DEFAULT_CONFIG = {
         "daily_markers": True,
     },
     "reset_alert": {
+        # Borrowed from resetwatch so the detector's own fallbacks and the
+        # config defaults cannot drift apart.
         "enabled": True,
-        "pct_jump_threshold": 10,
-        "resets_at_advance_sec": 3600,
+        "pct_jump_threshold": resetwatch.DEFAULT_PCT_JUMP,
+        "resets_at_advance_sec": resetwatch.DEFAULT_RESETS_ADVANCE_SEC,
     },
     "window": {"x": None, "y": None, "width": 380, "height": 400, "on_top": True},
     "language": "en",
@@ -124,9 +126,9 @@ NATIVE_TEXT = {
 def current_language():
     """Return the configured language, or the default if it is unrecognized.
 
-    CFG is normalized on load, but it is also mutated in place (settings save,
-    tests), so every native-surface consumer validates here rather than
-    trusting the raw value.
+    Every write path runs through normalize_config, so CFG should already hold
+    a supported code; the check stays because tests assign CFG entries in place
+    and a native surface must never render a raw, unvalidated value.
     """
     language = CFG.get("language", DEFAULT_CONFIG["language"])
     return language if language in SUPPORTED_LANGUAGES else DEFAULT_CONFIG["language"]
@@ -169,7 +171,7 @@ def _number(value, default, minimum=None, maximum=None, integer=False):
         return default
     try:
         result = float(value)
-        if result != result or result in (float("inf"), float("-inf")):
+        if not math.isfinite(result):
             raise ValueError("not finite")
     except (TypeError, ValueError, OverflowError):
         return default
@@ -338,6 +340,34 @@ def save_config(cfg, allow_recovery=False):
         return True
 
 
+def commit_config(candidate, allow_recovery=False):
+    """Persist a candidate config and adopt it as CFG only if the write stuck.
+
+    Every writer -- window geometry, the pin toggle, the settings form -- must
+    leave CFG matching what is on disk, so none of them may adopt a candidate
+    that save_config() rejected.
+    """
+    global CFG
+    if not save_config(candidate, allow_recovery=allow_recovery):
+        return False
+    CFG = normalize_config(candidate)
+    return True
+
+
+USER_AGENT = "ai-usage-widget/1.0"
+
+
+def bearer_headers(token, **extra):
+    """Build the request headers every provider fetch shares."""
+    headers = {
+        "Authorization": "Bearer %s" % token,
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    }
+    headers.update(extra)
+    return headers
+
+
 def http_get_json(url, headers=None, timeout=15):
     req = urllib.request.Request(url, headers=headers or {})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -345,21 +375,29 @@ def http_get_json(url, headers=None, timeout=15):
     return json.loads(raw)
 
 
-# Display name and card style for every provider. The fetchers, the failure
-# path in refresh_all(), and the tray all build their payload from this, so a
-# rename lands everywhere at once.
+# How every provider presents itself. provider_result(), the failure path in
+# refresh_all(), the toast, the alert window, and the tray tooltip all read
+# from this, so a rename lands everywhere at once. Fetcher selection is NOT
+# driven from here -- see the note in refresh_all().
+# "tray" is separate from "name" because the tooltip has 127 characters for
+# every provider combined and cannot afford the full titles.
+# "has_token" marks the providers backed by an expiring CLI credential, which
+# is what drives TOKEN_PROVIDERS and the token badge.
 PROVIDER_INFO = {
-    "claude": ("Claude Code", "windows"),
-    "codex": ("Codex CLI", "windows"),
-    "openrouter": ("OpenRouter", "balance"),
+    "claude": {"name": "Claude Code", "kind": "windows", "tray": "Claude",
+               "has_token": True},
+    "codex": {"name": "Codex CLI", "kind": "windows", "tray": "Codex",
+              "has_token": True},
+    "openrouter": {"name": "OpenRouter", "kind": "balance",
+                   "tray": "OpenRouter", "has_token": False},
 }
 
 
 def provider_result(provider_id):
     """Build the empty payload every fetcher and every failure path returns."""
-    name, kind = PROVIDER_INFO[provider_id]
-    return {"id": provider_id, "name": name, "kind": kind, "ok": False,
-            "windows": [], "meta": {}, "error": None}
+    info = PROVIDER_INFO[provider_id]
+    return {"id": provider_id, "name": info["name"], "kind": info["kind"],
+            "ok": False, "windows": [], "meta": {}, "error": None}
 
 
 def request_provider_json(url, headers, service, auth_code):
@@ -379,6 +417,20 @@ def request_provider_json(url, headers, service, auth_code):
     except Exception as exc:
         return None, error_info(
             "api_request_failed", params={"service": service}, detail=exc)
+
+
+def finalize_provider(result, data, service, empty_code):
+    """Mark a windowed provider healthy, or explain why it produced nothing.
+
+    The raw key list is what makes an unrecognized API shape diagnosable from
+    the card alone, so both windowed fetchers end the same way.
+    """
+    if result["windows"]:
+        result["ok"] = True
+    else:
+        result["error"] = error_info(empty_code, params={"service": service})
+        result["meta"]["raw_keys"] = list(data.keys())[:12]
+    return result
 
 
 def iso_to_epoch(value):
@@ -479,7 +531,6 @@ def read_claude_credentials(paths=None):
                 "subscription": oauth.get("subscriptionType"),
                 "expires_at": iso_to_epoch(
                     oauth.get("expiresAt") or oauth.get("expires_at")),
-                "source": path,
             }, None
         except Exception as exc:
             read_errors.append((path, exc))
@@ -507,13 +558,10 @@ def fetch_claude():
     if credentials.get("expires_at") and credentials["expires_at"] < time.time():
         result["meta"]["token_stale"] = True
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "anthropic-beta": "oauth-2025-04-20",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "User-Agent": "ai-usage-widget/1.0",
-    }
+    headers = bearer_headers(
+        token,
+        **{"anthropic-beta": "oauth-2025-04-20",
+           "Content-Type": "application/json"})
     data, last_err = None, None
     for url in CLAUDE_USAGE_URLS:
         data, last_err = request_provider_json(
@@ -546,13 +594,7 @@ def fetch_claude():
     if isinstance(extra, dict):
         result["meta"]["extra_usage"] = extra
 
-    if result["windows"]:
-        result["ok"] = True
-    else:
-        result["error"] = error_info(
-            "api_format_unrecognized", params={"service": "Claude"})
-        result["meta"]["raw_keys"] = list(data.keys())[:12]
-    return result
+    return finalize_provider(result, data, "Claude", "api_format_unrecognized")
 
 
 # ----------------------------------------------------------------------------
@@ -588,25 +630,28 @@ def read_codex_credentials(auth_path=None):
     if not access:
         return None, error_info("codex_token_missing")
     account_id = tokens.get("account_id") or auth.get("account_id")
+    # Decoded once and reused below: the access token was previously parsed
+    # here and again for its expiry, on every poll.
+    access_claims = _jwt_claims(access)
     plan = None
     if not account_id:
-        for token in (tokens.get("id_token"), access):
+        for token, claims in ((tokens.get("id_token"), None),
+                              (access, access_claims)):
             if not token:
                 continue
-            claims = _jwt_claims(token)
+            if claims is None:
+                claims = _jwt_claims(token)
             account = claims.get("https://api.openai.com/auth") or {}
             account_id = (
                 account.get("chatgpt_account_id") or account.get("account_id"))
             plan = account.get("chatgpt_plan_type") or plan
             if account_id:
                 break
-    access_claims = _jwt_claims(access)
     return {
         "token": access,
         "account_id": account_id,
         "plan": plan,
         "expires_at": iso_to_epoch(access_claims.get("exp")),
-        "source": path,
     }, None
 
 
@@ -642,12 +687,7 @@ def fetch_codex():
         result["meta"]["plan"] = credentials["plan"]
     result["meta"]["token_expires_at"] = credentials.get("expires_at")
 
-    headers = {
-        "Authorization": f"Bearer {access}",
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "ai-usage-widget/1.0",
-    }
+    headers = bearer_headers(access, **{"Content-Type": "application/json"})
     if account_id:
         headers["chatgpt-account-id"] = account_id
 
@@ -708,13 +748,7 @@ def fetch_codex():
     if isinstance(credits, dict):
         result["meta"]["credits"] = pick(credits, "balance", "remaining", "amount")
 
-    if result["windows"]:
-        result["ok"] = True
-    else:
-        result["error"] = error_info(
-            "api_limits_missing", params={"service": "Codex"})
-        result["meta"]["raw_keys"] = list(data.keys())[:12]
-    return result
+    return finalize_provider(result, data, "Codex", "api_limits_missing")
 
 
 OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
@@ -740,11 +774,7 @@ def fetch_openrouter():
         result["error"] = error_info("openrouter_key_missing")
         return result
 
-    headers = {
-        "Authorization": "Bearer " + key,
-        "Accept": "application/json",
-        "User-Agent": "ai-usage-widget/1.0",
-    }
+    headers = bearer_headers(key)
     data, request_error = request_provider_json(
         OPENROUTER_CREDITS_URL, headers, "OpenRouter", "openrouter_key_rejected")
     if not isinstance(data, dict):
@@ -809,7 +839,11 @@ _INITIAL_SIZE_OK = False
 # Use DATA_DIR, not APP_DIR: alert state must survive process exit even in a
 # one-file build; see the comment where DATA_DIR is defined.
 ALERT_STATE_PATH = os.path.join(DATA_DIR, "reset-alert-state.json")
-ALERTS = resetwatch.AlertStore(ALERT_STATE_PATH).load()
+# Pass the log path explicitly: AlertStore derives its own default beside the
+# state file, which lands on the same file only because both sit in DATA_DIR.
+# Naming ERROR_LOG_PATH here keeps the two from drifting apart silently.
+ALERTS = resetwatch.AlertStore(
+    ALERT_STATE_PATH, log_path=ERROR_LOG_PATH).load()
 # Protect ALERTS (seen/pending) and its save() calls from races between the
 # polling thread (process_reset_alerts) and the GUI thread (AlertApi). Without
 # this lock, a GUI dismiss() could be overwritten by polling-thread add()/save()
@@ -829,7 +863,7 @@ _GEOMETRY_SAVED = False
 
 def persist_window_geometry(window):
     """Persist the main window's position and size; safe to call repeatedly."""
-    global CFG, _GEOMETRY_SAVED
+    global _GEOMETRY_SAVED
     with _GEOMETRY_LOCK:
         if _GEOMETRY_SAVED:
             return True
@@ -845,9 +879,8 @@ def persist_window_geometry(window):
         except Exception as exc:
             _log_failure("window geometry read", exc)
             return False
-        if not save_config(candidate):
+        if not commit_config(candidate):
             return False
-        CFG = normalize_config(candidate)
         _GEOMETRY_SAVED = True
         return True
 
@@ -904,46 +937,50 @@ class TrayManager:
             ImageDraw.Draw(img).ellipse((4, 4, 59, 59), outline="#1E90FF", width=6)
             return img
 
+    @staticmethod
+    def _tooltip_line(info, provider):
+        """Format one tooltip row according to the provider's card kind.
+
+        Routing on "kind" is what keeps the tray in step with PROVIDER_INFO: a
+        new provider gets a row without anyone remembering to add one here.
+        """
+        label = info["tray"]
+        healthy = bool(provider and provider.get("ok"))
+
+        # A balance is not a quota window: no percentage and no reset.
+        if info["kind"] == "balance":
+            meta = (provider.get("meta") or {}) if healthy else {}
+            remaining = (meta.get("balance") or {}).get("remaining_usd")
+            if remaining is None:
+                return "%s: —" % label
+            return "%s: $%.2f" % (label, remaining)
+
+        w = tooltip_window(provider) if healthy else None
+        if not w or w.get("remaining_pct") is None:
+            return "%s: —" % label
+        # Use %g rather than %s: round(18.0, 1) prints "18.0", while the
+        # window shows "18"; the tooltip should match the card.
+        pct = "%g" % round(w["remaining_pct"], 1)
+        resets = w.get("resets_at")
+        if not resets:
+            return "%s: %s%%" % (label, pct)
+        secs = max(0, int(resets - time.time()))
+        h, rem = divmod(secs, 3600)
+        m = rem // 60
+        mu = native_text("unit_minute")
+        reset_str = ("%d%s %d%s" % (h, native_text("unit_hour"), m, mu)
+                     if h > 0 else "%d%s" % (m, mu))
+        return "%s: %s%% (%s %s)" % (
+            label, pct, native_text("tooltip_resets_in"), reset_str)
+
     def _build_tooltip(self):
         with STATE.lock:
             snap = copy.deepcopy(STATE.snapshot)
         if not snap.get("updated_at"):
             return "AI Usage Widget"
-
-        hu = native_text("unit_hour")
-        mu = native_text("unit_minute")
-        reset_label = native_text("tooltip_resets_in")
-
         lines = ["AI Usage Widget"]
-        for pid, pname in [("claude", "Claude"), ("codex", "Codex")]:
-            p = snap["providers"].get(pid)
-            w = tooltip_window(p) if (p and p.get("ok")) else None
-            if not w or w.get("remaining_pct") is None:
-                lines.append("%s: —" % pname)
-                continue
-            # Use %g rather than %s: round(18.0, 1) prints "18.0", while the
-            # window shows "18"; the tooltip should match the card.
-            pct = "%g" % round(w["remaining_pct"], 1)
-            resets = w.get("resets_at")
-            if resets:
-                secs = max(0, int(resets - time.time()))
-                h, rem = divmod(secs, 3600)
-                m = rem // 60
-                reset_str = "%d%s %d%s" % (h, hu, m, mu) if h > 0 else "%d%s" % (m, mu)
-                lines.append("%s: %s%% (%s %s)" % (pname, pct, reset_label, reset_str))
-            else:
-                lines.append("%s: %s%%" % (pname, pct))
-
-        # OpenRouter is a balance, not a quota window: no percentage or reset.
-        p = snap["providers"].get("openrouter")
-        rem_usd = None
-        if p and p.get("ok"):
-            rem_usd = ((p.get("meta") or {}).get("balance") or {}).get("remaining_usd")
-        if rem_usd is None:
-            lines.append("OpenRouter: —")
-        else:
-            lines.append("OpenRouter: $%.2f" % rem_usd)
-
+        for pid, info in PROVIDER_INFO.items():
+            lines.append(self._tooltip_line(info, snap["providers"].get(pid)))
         return "\n".join(lines)[:self.TOOLTIP_MAX]
 
     def start(self, window):
@@ -1020,7 +1057,14 @@ class AlertApi:
 
     def get_alerts(self):
         with ALERTS_LOCK:
-            return copy.deepcopy(ALERTS.pending)
+            alerts = copy.deepcopy(ALERTS.pending)
+        # Resolve display names here rather than in alert.html: PROVIDER_INFO
+        # is the only place provider titles live, and a stored event must not
+        # freeze a name that a later release renames.
+        for alert in alerts:
+            info = PROVIDER_INFO.get(alert.get("provider")) or {}
+            alert["provider_name"] = info.get("name", alert.get("provider"))
+        return alerts
 
     def dismiss_alert(self, alert_id):
         with ALERTS_LOCK:
@@ -1081,7 +1125,10 @@ class AlertWindowManager:
                     # the window here; an unreferenced, frameless, always-on-top
                     # window could not otherwise be closed.
                     self._destroy_locked()
-            height = min(460, 90 + 130 * max(1, pending_count))
+            # 90 = alert.html's .head + .wrap padding, 130 = one .row (padding,
+            # three text lines, the optional .away badge, the dismiss button).
+            # Re-measure both if those rules in alert.html change.
+            height = min(460, 90 + 130 * pending_count)
             x, y = self._corner(height)
             # Record the current count in case create_window registers a window
             # and then fails. Any orphaned window must be destroyed, not merely
@@ -1129,8 +1176,9 @@ class AlertWindowManager:
             return
         if len(events) == 1:
             provider_id = events[0]["provider"]
-            name, _kind = PROVIDER_INFO.get(provider_id, (provider_id, "windows"))
-            body = native_text("toast_one", provider=name)
+            info = PROVIDER_INFO.get(provider_id) or {}
+            body = native_text(
+                "toast_one", provider=info.get("name", provider_id))
         else:
             body = native_text("toast_many", count=len(events))
         try:
@@ -1190,7 +1238,10 @@ def refresh_all():
         return
     try:
         providers = {}
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        # Listed rather than read off PROVIDER_INFO: holding the function
+        # objects in that table would freeze a second binding beside each
+        # module-level name, so reassigning a fetcher would stop taking effect.
+        with ThreadPoolExecutor(max_workers=len(PROVIDER_INFO)) as executor:
             futures = {
                 executor.submit(fetch_claude): "claude",
                 executor.submit(fetch_codex): "codex",
@@ -1239,21 +1290,47 @@ def refresh_loop():
         STATE.refresh_wake_event.clear()
         try:
             refresh_all()
-        except Exception:
-            pass
-        try:
-            delay = poll_delay()
-        except Exception:
-            delay = DEFAULT_CONFIG["refresh_interval_sec"]
+        except Exception as exc:
+            _log_failure("refresh loop", exc)
+        # poll_delay() clamps and falls back on its own, so it cannot raise.
+        delay = poll_delay()
         if STATE.shutdown_event.is_set():
             break
         STATE.refresh_wake_event.wait(timeout=delay)
 
 
-REDACTED = "***"
+# The only paths the settings form may write. config_for_ui() filters what
+# leaves for the WebView; this is the symmetric filter on the way back in, so
+# a hand-edited or replayed payload cannot reach a key the form never offered
+# -- the OpenRouter secret above all, where writing "***" over a real key
+# would be unrecoverable.
+UI_WRITABLE_FIELDS = (
+    ("language",),
+    ("refresh_interval_sec",),
+    ("window", "width"),
+    ("window", "height"),
+    ("window", "on_top"),
+    ("display", "daily_markers"),
+    ("reset_alert", "enabled"),
+)
 
 
-def config_for_ui(cfg=None):
+def apply_ui_config(candidate, update):
+    """Copy only the allowlisted settings fields from a WebView payload."""
+    for path in UI_WRITABLE_FIELDS:
+        source = update
+        for key in path[:-1]:
+            source = source.get(key) if isinstance(source, dict) else None
+        if not isinstance(source, dict) or path[-1] not in source:
+            continue
+        target = candidate
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = source[path[-1]]
+    return candidate
+
+
+def config_for_ui():
     """Return the secret-free config subset sent to the WebView.
 
     A user may put the OpenRouter key in config.json, and this payload crosses
@@ -1263,7 +1340,7 @@ def config_for_ui(cfg=None):
     the whole section is dropped rather than masked. Masking would still tell
     the page whether a key exists.
     """
-    safe = copy.deepcopy(CFG if cfg is None else cfg)
+    safe = copy.deepcopy(CFG)
     safe.pop("openrouter", None)
     return safe
 
@@ -1276,7 +1353,8 @@ def config_health_for_ui():
     return health
 
 
-TOKEN_PROVIDERS = ("claude", "codex")
+TOKEN_PROVIDERS = tuple(
+    pid for pid, info in PROVIDER_INFO.items() if info["has_token"])
 
 
 def token_status_from_snapshot(providers, current_time=None):
@@ -1388,18 +1466,16 @@ class JsApi:
         return launch_cli_login("codex", ["login"])
 
     def toggle_on_top(self):
-        global CFG
         new_val = not CFG["window"]["on_top"]
         candidate = copy.deepcopy(CFG)
         candidate["window"]["on_top"] = new_val
-        if not save_config(candidate):
+        if not commit_config(candidate):
             return {
                 "ok": False,
                 "value": CFG["window"]["on_top"],
                 "error": CONFIG_HEALTH.get("error") or error_info(
                     "config_write_failed"),
             }
-        CFG = normalize_config(candidate)
         try:
             win = STATE.main_window or webview.windows[0]
             win.on_top = new_val
@@ -1411,39 +1487,18 @@ class JsApi:
             }
         return {"ok": True, "value": new_val}
 
-    def get_config(self):
-        return config_for_ui()
-
     def save_config_api(self, cfg):
-        global CFG
         if not isinstance(cfg, dict):
             return {"ok": False, "error": error_info("config_invalid")}
         try:
             old_lang = CFG["language"]
-            update = copy.deepcopy(cfg)
-            # config_for_ui no longer sends the openrouter section at all, so
-            # nothing should echo the placeholder back. Keep the guard anyway:
-            # writing "***" over a real key is unrecoverable, and this payload
-            # comes from a page that could be edited or replayed.
-            section = update.get("openrouter")
-            if isinstance(section, dict) and section.get("api_key") == REDACTED:
-                section = dict(section)
-                section.pop("api_key", None)
-                update["openrouter"] = section
-            candidate = copy.deepcopy(CFG)
-            for key, value in update.items():
-                if isinstance(value, dict) and isinstance(candidate.get(key), dict):
-                    candidate[key].update(value)
-                else:
-                    candidate[key] = value
-            candidate = normalize_config(candidate)
-            if not save_config(candidate, allow_recovery=True):
+            candidate = apply_ui_config(copy.deepcopy(CFG), cfg)
+            if not commit_config(candidate, allow_recovery=True):
                 return {
                     "ok": False,
                     "error": CONFIG_HEALTH.get("error") or error_info(
                         "config_write_failed"),
                 }
-            CFG = candidate
             STATE.refresh_wake_event.set()
             try:
                 win = STATE.main_window or webview.windows[0]
@@ -1471,7 +1526,9 @@ class JsApi:
         shutdown_app()
 
     def minimize_to_tray(self):
-        if TRAY_AVAILABLE and TRAY.window_ref:
+        # window_ref is only ever set by TrayManager.start(), which returns
+        # early when the tray is unavailable -- so it implies TRAY_AVAILABLE.
+        if TRAY.window_ref:
             TRAY.hide_window()
             return True
         return False
@@ -1479,7 +1536,7 @@ class JsApi:
     def update_tray_icon(self):
         # The icon itself is static; only its tooltip needs updating. Keep this
         # method name because ui.html calls it on every poll.
-        if TRAY_AVAILABLE and TRAY.window_ref:
+        if TRAY.window_ref:
             TRAY.update_tooltip()
             return True
         return False

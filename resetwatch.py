@@ -149,6 +149,11 @@ class AlertStore:
         # console, so this UI-visible flag and the log file are the only ways
         # to learn about a write failure.
         self.last_save_ok = True
+        # Serialized form of the last successful write. save() runs on every
+        # poll whether or not anything moved, and each call is an fsync -- a
+        # real disk barrier. On an idle machine the payload is byte-identical
+        # every time, so compare before spending one.
+        self._written = None
 
     def load(self):
         try:
@@ -185,14 +190,20 @@ class AlertStore:
         restarts is lost. Therefore the result is returned, logged, and shown
         in settings.
         """
+        payload = {"seen": self.seen, "pending": self.pending}
+        # sort_keys so an unchanged payload always compares equal.
+        fingerprint = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        if self.last_save_ok and fingerprint == self._written:
+            return True
         try:
-            atomic_write_json(
-                self.path, {"seen": self.seen, "pending": self.pending})
+            atomic_write_json(self.path, payload)
         except Exception as e:
             self._log_failure(e)
             self.last_save_ok = False
+            self._written = None
             return False
         self.last_save_ok = True
+        self._written = fingerprint
         return True
 
     def merge_seen(self, new_readings):
