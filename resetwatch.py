@@ -51,6 +51,21 @@ def atomic_write_json(path, payload):
                 pass
 
 
+def _reading(resets_at, pct, derived):
+    """Return a comparable reading built from raw values, or None."""
+    if resets_at is None or pct is None:
+        return None
+    try:
+        return {
+            "resets_at": float(resets_at),
+            "remaining_pct": float(pct),
+            # Mark timestamps derived from the current time; see module docs.
+            "resets_at_derived": bool(derived),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
 def _week_reading(provider):
     """Return a comparable weekly-window reading, or None."""
     if not isinstance(provider, dict) or not provider.get("ok"):
@@ -58,21 +73,29 @@ def _week_reading(provider):
     for w in provider.get("windows") or []:
         if not isinstance(w, dict) or w.get("id") != WEEK_WINDOW_ID:
             continue
-        resets_at = w.get("resets_at")
-        pct = w.get("remaining_pct")
-        if resets_at is None or pct is None:
-            return None
         extra = w.get("extra") or {}
-        try:
-            return {
-                "resets_at": float(resets_at),
-                "remaining_pct": float(pct),
-                # Mark timestamps derived from the current time; see module docs.
-                "resets_at_derived": bool(extra.get("resets_at_derived")),
-            }
-        except (TypeError, ValueError):
-            return None
+        return _reading(w.get("resets_at"), w.get("remaining_pct"),
+                        extra.get("resets_at_derived"))
     return None
+
+
+def stored_readings(seen):
+    """Return the persisted baseline entries that still have a usable shape.
+
+    A state file written by an older or forked build -- or hand-edited -- can
+    hold an entry missing a key. detect_resets indexes those keys directly, so
+    keeping such an entry would raise on every poll from then on and silently
+    kill weekly reset alerts for good. Dropping it costs one reseed instead.
+    """
+    out = {}
+    for pid, r in (seen or {}).items():
+        if not isinstance(r, dict):
+            continue
+        reading = _reading(r.get("resets_at"), r.get("remaining_pct"),
+                           r.get("resets_at_derived"))
+        if reading is not None:
+            out[pid] = reading
+    return out
 
 
 def readings(providers):
@@ -161,8 +184,12 @@ class AlertStore:
                 data = json.load(f)
             seen = data.get("seen")
             pending = data.get("pending")
-            self.seen = seen if isinstance(seen, dict) else {}
-            self.pending = pending if isinstance(pending, list) else []
+            if not isinstance(pending, list):
+                pending = []
+            # Drop entries the rest of the module could not use; see
+            # stored_readings.
+            self.seen = stored_readings(seen if isinstance(seen, dict) else {})
+            self.pending = [e for e in pending if isinstance(e, dict)]
         except Exception:
             self.seen = {}
             self.pending = []
@@ -193,7 +220,11 @@ class AlertStore:
         payload = {"seen": self.seen, "pending": self.pending}
         # sort_keys so an unchanged payload always compares equal.
         fingerprint = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-        if self.last_save_ok and fingerprint == self._written:
+        # Skip the write only if the file that write produced is still there.
+        # Something outside the process (a cleanup, a sync tool, antivirus) can
+        # remove it, and without this check an idle machine would never notice.
+        if (self.last_save_ok and fingerprint == self._written
+                and os.path.exists(self.path)):
             return True
         try:
             atomic_write_json(self.path, payload)

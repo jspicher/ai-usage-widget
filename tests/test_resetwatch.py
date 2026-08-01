@@ -169,6 +169,49 @@ class TestAlertStore(unittest.TestCase):
         self.assertEqual(again.seen["claude"]["remaining_pct"], 2.0)
         self.assertEqual(len(again.pending), 1)
 
+    def test_malformed_seen_entry_is_dropped_instead_of_poisoning_polls(self):
+        """A stored entry missing a key would otherwise raise on every poll.
+
+        detect_resets indexes the stored reading directly, so one bad entry --
+        from a hand edit or a build that stored a different shape -- would kill
+        weekly reset alerts on every restart until the file was deleted by hand.
+        """
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump({"seen": {"claude": {"remaining_pct": 20.0},
+                                "gemini": {"resets_at": "soon",
+                                           "remaining_pct": 5.0},
+                                "codex": {"resets_at": 1.0,
+                                          "remaining_pct": 2.0}},
+                       "pending": []}, f)
+        s = resetwatch.AlertStore(self.path).load()
+        self.assertEqual(sorted(s.seen), ["codex"])
+        self.assertEqual(s.seen["codex"]["resets_at"], 1.0)
+        # The dropped provider now looks unseen, so the next poll reseeds it.
+        nxt = {"claude": {"resets_at": 9000.0, "remaining_pct": 100.0}}
+        self.assertEqual(resetwatch.detect_resets(s.seen, nxt), [])
+
+    def test_non_dict_pending_entry_is_dropped(self):
+        """add() and the alert window read every pending entry as a dict."""
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump({"seen": {}, "pending": ["oops", {"id": "x"}]}, f)
+        s = resetwatch.AlertStore(self.path).load()
+        self.assertEqual([e["id"] for e in s.pending], ["x"])
+        self.assertEqual(len(s.add([{"id": "x"}])), 0)
+
+    def test_deleted_state_file_is_written_again(self):
+        """A file removed after a successful write must be recreated.
+
+        Otherwise the unchanged-payload skip hides its loss until a restart,
+        which drops undismissed alerts and the baseline without a warning.
+        """
+        s = resetwatch.AlertStore(self.path).load()
+        s.add([{"id": "x"}])
+        self.assertTrue(s.save())
+        os.unlink(self.path)
+        self.assertTrue(s.save())
+        again = resetwatch.AlertStore(self.path).load()
+        self.assertEqual([e["id"] for e in again.pending], ["x"])
+
     def test_save_leaves_no_temp_files(self):
         s = resetwatch.AlertStore(self.path).load()
         self.assertTrue(s.save())
@@ -205,7 +248,15 @@ class TestAlertStore(unittest.TestCase):
     def test_unchanged_state_does_not_rewrite(self):
         """save() runs every poll; an idle machine must not fsync every time."""
         s = resetwatch.AlertStore(self.path).load()
-        with mock.patch.object(resetwatch, "atomic_write_json") as write:
+
+        def fake_write(path, payload):
+            # Stand in for the file the real write would have left behind:
+            # save() skips only while its own output is still on disk.
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+
+        with mock.patch.object(resetwatch, "atomic_write_json",
+                               side_effect=fake_write) as write:
             self.assertTrue(s.save())
             self.assertTrue(s.save())
             self.assertEqual(write.call_count, 1)

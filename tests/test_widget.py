@@ -87,10 +87,31 @@ class TestConfig(WidgetTestCase):
             cfg["window"],
             {"x": -120, "y": 40, "width": 200, "height": 1200, "on_top": True},
         )
-        self.assertEqual(cfg["reset_alert"]["pct_jump_threshold"], 0)
+        self.assertEqual(
+            cfg["reset_alert"]["pct_jump_threshold"], widget.PCT_JUMP_MIN)
         self.assertEqual(cfg["reset_alert"]["resets_at_advance_sec"], 3600)
         self.assertTrue(cfg["display"]["daily_markers"])
         self.assertNotIn("opencode", cfg)
+
+    def test_pct_jump_threshold_never_clamps_below_the_firing_floor(self):
+        """A hand-edited 0 threshold would pop the alert window on every poll.
+
+        resetwatch reports a reset whenever remaining_pct rises by at least the
+        threshold, so 0 -- or any negative value, which clamps -- fires on every
+        poll where the balance merely failed to fall. The event id follows
+        remaining_pct, so the dedup does not suppress the repeats and nothing in
+        the UI turns the popup off.
+        """
+        self.assertGreaterEqual(widget.PCT_JUMP_MIN, 1.0)
+        for raw in (0, -5, 0.25):
+            cfg = widget.normalize_config({
+                "reset_alert": {"pct_jump_threshold": raw},
+            })
+            self.assertEqual(
+                cfg["reset_alert"]["pct_jump_threshold"],
+                widget.PCT_JUMP_MIN,
+                "threshold %r" % raw,
+            )
 
     def test_daily_markers_can_be_disabled(self):
         cfg = widget.normalize_config({
@@ -321,6 +342,31 @@ class TestCredentials(unittest.TestCase):
         self.assertEqual(result["meta"]["token_expires_at"], 1_900_000_000)
         self.assertNotIn("do-not-leak", json.dumps(result))
 
+    def test_non_dict_claude_body_reports_an_unrecognized_format(self):
+        """An HTTP 200 carrying a JSON scalar must not crash the fetcher.
+
+        A proxy or edge error page can answer with a bare string or array, which
+        is valid JSON. Without the guard the card showed "Internal widget error"
+        with no login button and no key list, blaming the widget for a broken
+        response.
+        """
+        credentials = {"token": "t", "subscription": None, "expires_at": None}
+        for body in ("unauthorized", []):
+            with (
+                mock.patch.object(
+                    widget, "read_claude_credentials",
+                    return_value=(credentials, None)),
+                mock.patch.object(widget, "http_get_json", return_value=body),
+            ):
+                result = widget.fetch_claude()
+            self.assertFalse(result["ok"], repr(body))
+            self.assertEqual(
+                result["error"],
+                {"code": "api_format_unrecognized",
+                 "params": {"service": "Claude"}},
+                repr(body),
+            )
+
     def test_token_status_uses_cached_expiry(self):
         providers = {
             "claude": {"meta": {"token_expires_at": 10_100}},
@@ -422,6 +468,35 @@ class TestProviderPayloads(unittest.TestCase):
         self.assertEqual(failed["name"], "Claude Code")
         self.assertEqual(failed["kind"], "windows")
 
+    def test_http_error_names_the_endpoint_that_failed(self):
+        """Claude tries two endpoints, so "HTTP 502" alone is not diagnosable.
+
+        api.anthropic.com and claude.ai fail for different reasons and need
+        different fixes; the card and widget-error.log have to say which one
+        answered.
+        """
+        url = "https://claude.ai/api/oauth/usage"
+        failure = widget.urllib.error.HTTPError(
+            url, 502, "Bad Gateway", None, None)
+        with mock.patch.object(widget, "http_get_json", side_effect=failure):
+            data, error = widget.request_provider_json(
+                url, {}, "Claude", "claude_auth_expired")
+        self.assertIsNone(data)
+        self.assertEqual(error["code"], "api_http_error")
+        self.assertEqual(error["params"], {"service": "Claude", "status": 502})
+        self.assertEqual(error["detail"], url)
+
+    def test_auth_failures_still_route_to_the_relogin_code(self):
+        """Adding the URL detail must not disturb the 401/403 branch."""
+        failure = widget.urllib.error.HTTPError(
+            "https://chatgpt.com/backend-api/wham/usage", 401, "no", None, None)
+        with mock.patch.object(widget, "http_get_json", side_effect=failure):
+            _data, error = widget.request_provider_json(
+                "https://chatgpt.com/backend-api/wham/usage", {}, "Codex",
+                "codex_auth_expired")
+        self.assertEqual(
+            error, {"code": "codex_auth_expired", "params": {"status": 401}})
+
     def test_resolve_resets_flags_only_derived_timestamps(self):
         absolute, derived = widget._resolve_resets({"resets_at": 1_790_000_000})
         self.assertEqual(absolute, 1_790_000_000)
@@ -458,6 +533,205 @@ class TestAlertLocalization(WidgetTestCase):
         self.assertIn("2", widget.native_text("toast_many", count=2))
         widget.CFG["language"] = "unsupported"
         self.assertEqual(widget.native_text("tray_exit"), "Exit")
+
+
+class FakeAlertWindow:
+    """Stand in for the pywebview alert window; records what was asked of it."""
+
+    def __init__(self):
+        self.sizes = []
+        self.renders = 0
+        self.destroyed = False
+
+    def resize(self, width, height):
+        self.sizes.append((width, height))
+
+    def evaluate_js(self, script):
+        self.renders += 1
+
+    def destroy(self):
+        self.destroyed = True
+
+
+class TestAlertWindowSizing(unittest.TestCase):
+    def test_height_follows_the_row_count_up_to_the_maximum(self):
+        """The window is frameless, not resizable, and hides overflow."""
+        manager = widget.AlertWindowManager
+        self.assertEqual(manager.height_for(1), 220)
+        self.assertEqual(manager.height_for(2), 350)
+        self.assertEqual(manager.height_for(5), manager.MAX_HEIGHT)
+
+    def test_second_alert_resizes_the_open_window_before_rerendering(self):
+        """A second provider's reset must not render below the visible area.
+
+        The window was sized for one alert; without the resize the new row's
+        provider name, percentages, and Dismiss button are unreachable.
+        """
+        manager = widget.AlertWindowManager()
+        window = FakeAlertWindow()
+        manager.window = window
+        alerts = mock.Mock()
+        alerts.pending = [{"id": "a"}, {"id": "b"}]
+        with mock.patch.object(widget, "ALERTS", alerts):
+            manager.raise_alert()
+        self.assertEqual(
+            window.sizes,
+            [(manager.WIDTH, widget.AlertWindowManager.height_for(2))],
+        )
+        self.assertEqual(window.renders, 1)
+
+    def test_partial_dismissal_shrinks_the_window(self):
+        """Dismissing two of three alerts must not leave a 460px window empty."""
+        manager = widget.AlertWindowManager()
+        window = FakeAlertWindow()
+        manager.window = window
+        alerts = mock.Mock()
+        alerts.pending = [{"id": "a"}]
+        with mock.patch.object(widget, "ALERTS", alerts):
+            manager.refit_or_close()
+        self.assertEqual(
+            window.sizes, [(manager.WIDTH, manager.height_for(1))])
+        self.assertFalse(window.destroyed)
+
+    def test_last_dismissal_still_closes_the_window(self):
+        manager = widget.AlertWindowManager()
+        window = FakeAlertWindow()
+        manager.window = window
+        alerts = mock.Mock()
+        alerts.pending = []
+        with mock.patch.object(widget, "ALERTS", alerts):
+            manager.refit_or_close()
+        self.assertTrue(window.destroyed)
+        self.assertIsNone(manager.window)
+
+
+class TestTrayMenu(WidgetTestCase):
+    @staticmethod
+    def _labels(menu):
+        return [item.text for item in menu
+                if item is not widget.pystray.Menu.SEPARATOR]
+
+    def test_menu_labels_follow_a_later_language_change(self):
+        """Switching to Russian used to leave the tray menu in English.
+
+        The window, toast, and tooltip all switched while right-clicking the
+        tray still showed "Show / Refresh / Exit"; only a restart fixed it.
+        """
+        if not widget.TRAY_AVAILABLE:
+            self.skipTest("pystray is unavailable")
+        widget.CFG = widget.normalize_config({"language": "en"})
+        tray = widget.TrayManager()
+        with mock.patch.object(
+                widget.pystray, "Icon", return_value=mock.Mock()) as ctor:
+            tray.start(mock.Mock())
+        menu = ctor.call_args.args[3]
+        self.assertEqual(self._labels(menu), ["Show", "Refresh", "Exit"])
+        # start() returns early once the icon exists and never reassigns the
+        # menu, so these labels have to resolve against CFG when they are read.
+        widget.CFG = widget.normalize_config({"language": "ru"})
+        self.assertEqual(
+            self._labels(menu), ["Показать", "Обновить", "Выход"])
+
+    def test_language_change_rebuilds_the_cached_native_menu(self):
+        """Windows caches the popup as an HMENU built once per update_menu()."""
+        tray = widget.TrayManager()
+        tray.icon = mock.Mock()
+        tray.apply_language()
+        tray.icon.update_menu.assert_called_once_with()
+
+
+class FakeScreen:
+    def __init__(self, x, y, width, height):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+
+
+class FakeMainWindow:
+    def __init__(self, x=120, y=240):
+        self.x = x
+        self.y = y
+        self.width = 380
+        self.height = 400
+
+
+class TestWindowGeometry(WidgetTestCase):
+    PRIMARY = FakeScreen(0, 0, 1920, 1080)
+
+    def setUp(self):
+        super().setUp()
+        self.original_saved = widget._GEOMETRY_SAVED
+        widget._GEOMETRY_SAVED = False
+
+    def tearDown(self):
+        widget._GEOMETRY_SAVED = self.original_saved
+        super().tearDown()
+
+    def test_position_on_a_missing_monitor_falls_back_to_the_default(self):
+        """An undocked second monitor used to hide the window off-desktop.
+
+        The tray icon appeared but Show did nothing visible, and the frameless
+        window's pin, settings, and close buttons were unreachable.
+        """
+        self.assertEqual(
+            widget.visible_position(2600, 300, 380, 400, [self.PRIMARY]),
+            (None, None),
+        )
+        # A sliver at the edge is not "visible" either: the controls sit in the
+        # part that is still off-screen.
+        self.assertEqual(
+            widget.visible_position(1900, 300, 380, 400, [self.PRIMARY]),
+            (None, None),
+        )
+
+    def test_position_on_a_present_monitor_is_kept(self):
+        second = FakeScreen(1920, 0, 1920, 1080)
+        self.assertEqual(
+            widget.visible_position(120, 240, 380, 400, [self.PRIMARY]),
+            (120, 240),
+        )
+        self.assertEqual(
+            widget.visible_position(2600, 300, 380, 400, [self.PRIMARY, second]),
+            (2600, 300),
+        )
+
+    def test_unreadable_screen_layout_trusts_the_saved_position(self):
+        """Never move a window that was probably fine just because a query
+        failed; the caller passes None when screen enumeration raised."""
+        self.assertEqual(
+            widget.visible_position(2600, 300, 380, 400, None), (2600, 300))
+        self.assertEqual(
+            widget.visible_position(2600, 300, 380, 400, []), (2600, 300))
+        self.assertEqual(
+            widget.visible_position(None, None, 380, 400, [self.PRIMARY]),
+            (None, None),
+        )
+
+    def test_closing_handler_saves_position_while_the_window_lives(self):
+        """Alt+F4 and session logoff never run shutdown_app.
+
+        The old fallback ran after webview.start() returned, when reading
+        window.x raises, so a dragged widget reopened at its old corner forever.
+        """
+        with config_sandbox() as (_folder, path, _log):
+            widget.CFG = widget.normalize_config({})
+            widget.CONFIG_HEALTH = healthy_config_state()
+            widget.save_geometry_on_close(FakeMainWindow(x=120, y=240))()
+            with open(path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+        self.assertEqual(saved["window"]["x"], 120)
+        self.assertEqual(saved["window"]["y"], 240)
+        self.assertTrue(widget._GEOMETRY_SAVED)
+
+    def test_closing_handler_never_reports_failure_to_pywebview(self):
+        """pywebview cancels the close when a closing handler returns False, so
+        a failed geometry save must not trap the user in an unclosable window."""
+        widget.CFG = widget.normalize_config({})
+        with mock.patch.object(widget, "commit_config", return_value=False):
+            result = widget.save_geometry_on_close(FakeMainWindow())()
+        self.assertIsNone(result)
+        self.assertFalse(widget._GEOMETRY_SAVED)
 
 
 class TestCli(unittest.TestCase):

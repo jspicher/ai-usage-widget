@@ -61,6 +61,12 @@ ERROR_LOG_PATH = os.path.join(DATA_DIR, "widget-error.log")
 SUPPORTED_LANGUAGES = ("en", "ru")
 REFRESH_MIN_SEC = 15
 REFRESH_MAX_SEC = 600
+# A jump of less than one point is not a reset. resetwatch reports a reset when
+# remaining_pct rises by at least this much, so a hand-edited 0 (or a negative
+# value, which clamps) would fire on every poll where the balance merely failed
+# to fall -- and because the event id follows remaining_pct, the dedup in
+# AlertStore.add would not suppress the repeats.
+PCT_JUMP_MIN = 1.0
 
 DEFAULT_CONFIG = {
     "refresh_interval_sec": 300,
@@ -251,7 +257,7 @@ def normalize_config(value):
     cfg["reset_alert"]["pct_jump_threshold"] = _number(
         source_alert.get("pct_jump_threshold"),
         DEFAULT_CONFIG["reset_alert"]["pct_jump_threshold"],
-        0,
+        PCT_JUMP_MIN,
         100,
     )
     cfg["reset_alert"]["resets_at_advance_sec"] = _number(
@@ -406,6 +412,10 @@ def request_provider_json(url, headers, service, auth_code):
     Returns ``(data, None)`` on success or ``(None, error_info)`` on failure.
     A 401/403 gets the provider's own auth code so the UI knows to offer the
     re-login button; everything else falls back to the shared HTTP codes.
+    The failing URL rides along as the detail: Claude has two endpoints and
+    tries them in order, so without it "HTTP 502" does not say whether the
+    Anthropic API or the claude.ai fallback broke -- different causes, and
+    different fixes.
     """
     try:
         return http_get_json(url, headers), None
@@ -413,7 +423,10 @@ def request_provider_json(url, headers, service, auth_code):
         if exc.code in (401, 403):
             return None, error_info(auth_code, params={"status": exc.code})
         return None, error_info(
-            "api_http_error", params={"service": service, "status": exc.code})
+            "api_http_error",
+            params={"service": service, "status": exc.code},
+            detail=url,
+        )
     except Exception as exc:
         return None, error_info(
             "api_request_failed", params={"service": service}, detail=exc)
@@ -571,6 +584,13 @@ def fetch_claude():
     if data is None:
         result["error"] = last_err or error_info(
             "api_no_response", params={"service": "Claude"})
+        return result
+    # Same guard as the other two fetchers: an HTTP 200 whose body is a JSON
+    # scalar or array (a proxy or an edge error page) is valid JSON, so
+    # request_provider_json reports success and data.get() below would raise.
+    if not isinstance(data, dict):
+        result["error"] = error_info(
+            "api_format_unrecognized", params={"service": "Claude"})
         return result
 
     label_map = {
@@ -885,6 +905,48 @@ def persist_window_geometry(window):
         return True
 
 
+def save_geometry_on_close(window):
+    """Build the window's ``closing`` handler.
+
+    Geometry has to be read while the native form still exists. Reading it
+    after webview.start() returns raises, so an Alt+F4 or a session logoff --
+    neither of which runs shutdown_app() -- would otherwise lose the position
+    the user just dragged the widget to.
+    """
+    def handler():
+        # Deliberately returns None: pywebview cancels the close when a
+        # closing handler returns False, so reporting a failed save here would
+        # leave the user unable to close the window at all.
+        persist_window_geometry(window)
+    return handler
+
+
+# How much of the restored window must land on a monitor to count as usable.
+# A sliver at the edge still leaves the pin, settings, and close buttons off
+# the desktop, and the window is frameless, so there is nothing to drag back.
+VISIBLE_MARGIN_PX = 80
+
+
+def visible_position(x, y, width, height, screens):
+    """Return the saved position, or ``(None, None)`` when no monitor shows it.
+
+    A window saved on a secondary monitor paints outside the desktop once that
+    monitor is undocked, and only hand-editing config.json brings it back. The
+    monitor layout can change between runs, so this is checked when the window
+    is created rather than clamped in normalize_config. An unreadable or empty
+    screen list means "layout unknown": trust the saved position rather than
+    move a window that was probably fine.
+    """
+    if x is None or y is None or not screens:
+        return x, y
+    for screen in screens:
+        overlap_w = min(x + width, screen.x + screen.width) - max(x, screen.x)
+        overlap_h = min(y + height, screen.y + screen.height) - max(y, screen.y)
+        if overlap_w >= VISIBLE_MARGIN_PX and overlap_h >= VISIBLE_MARGIN_PX:
+            return x, y
+    return None, None
+
+
 def shutdown_app():
     """Handle both exit paths: the X button and the tray's Exit command.
 
@@ -989,11 +1051,18 @@ class TrayManager:
         self.window_ref = window
         if self.icon is not None:
             return
+        # Callable labels, not plain strings: start() runs once and returns
+        # early afterwards, so a label captured here would keep the launch
+        # language forever. pystray resolves a callable every time it builds
+        # the menu -- see apply_language() for why building is not automatic.
         menu = pystray.Menu(
-            pystray.MenuItem(native_text("tray_show"), self._on_show, default=True),
-            pystray.MenuItem(native_text("tray_refresh"), self._on_refresh),
+            pystray.MenuItem(
+                lambda item: native_text("tray_show"), self._on_show, default=True),
+            pystray.MenuItem(
+                lambda item: native_text("tray_refresh"), self._on_refresh),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(native_text("tray_exit"), self._on_quit),
+            pystray.MenuItem(
+                lambda item: native_text("tray_exit"), self._on_quit),
         )
         self.icon = pystray.Icon(
             "ai-usage", self._load_icon_image(), self._build_tooltip(), menu)
@@ -1009,6 +1078,22 @@ class TrayManager:
             return
         try:
             icon.title = self._build_tooltip()
+        except Exception:
+            pass
+
+    def apply_language(self):
+        """Redraw both tray surfaces after the configured language changes.
+
+        Windows keeps the popup menu as a native HMENU that pystray builds once
+        and reuses on every right-click, so callable labels only take effect
+        once update_menu() rebuilds it.
+        """
+        self.update_tooltip()
+        icon = self.icon
+        if icon is None:
+            return
+        try:
+            icon.update_menu()
         except Exception:
             pass
 
@@ -1046,8 +1131,8 @@ TRAY = TrayManager()
 class AlertApi:
     """Expose the alert window API.
 
-    Both dismiss methods call close_if_empty() only AFTER releasing
-    ALERTS_LOCK. close_if_empty acquires the window's own lock, and there is no
+    Both dismiss methods call refit_or_close() only AFTER releasing
+    ALERTS_LOCK. refit_or_close acquires the window's own lock, and there is no
     need to impose a shared nesting order on every caller when the two locks
     can simply never be held together.
     """
@@ -1070,14 +1155,14 @@ class AlertApi:
         with ALERTS_LOCK:
             ALERTS.dismiss(alert_id)
             ALERTS.save()
-        ALERT_WINDOW.close_if_empty()
+        ALERT_WINDOW.refit_or_close()
         return True
 
     def dismiss_all(self):
         with ALERTS_LOCK:
             ALERTS.dismiss_all()
             ALERTS.save()
-        ALERT_WINDOW.close_if_empty()
+        ALERT_WINDOW.refit_or_close()
         return True
 
 
@@ -1086,10 +1171,38 @@ class AlertWindowManager:
 
     WIDTH = 340
     MARGIN = 16
+    # HEAD = alert.html's .head + .wrap padding, ROW = one .row (padding, three
+    # text lines, the optional .away badge, the dismiss button). Re-measure both
+    # if those rules in alert.html change.
+    HEAD_HEIGHT = 90
+    ROW_HEIGHT = 130
+    MAX_HEIGHT = 460
 
     def __init__(self):
         self.window = None
         self.lock = threading.Lock()
+
+    @classmethod
+    def height_for(cls, pending_count):
+        """Return the height that shows ``pending_count`` rows without clipping.
+
+        The creation path and the re-render path both call this so they cannot
+        drift apart: the window is frameless and not resizable by the user, and
+        alert.html hides overflow, so a height computed once at creation would
+        bury every later alert's dismiss button below the visible area.
+        """
+        return min(cls.MAX_HEIGHT, cls.HEAD_HEIGHT + cls.ROW_HEIGHT * pending_count)
+
+    def _resize_locked(self, pending_count):
+        """Refit the open window to the row count; call only under self.lock.
+
+        A resize failure must not take the alert path down with it -- a stale
+        height is still better than a lost alert.
+        """
+        try:
+            self.window.resize(self.WIDTH, self.height_for(pending_count))
+        except Exception:
+            pass
 
     def _corner(self, height):
         """Return the work area's bottom-right corner, allowing for the taskbar."""
@@ -1116,6 +1229,7 @@ class AlertWindowManager:
         with self.lock:
             if self.window is not None:
                 try:
+                    self._resize_locked(pending_count)
                     self.window.evaluate_js(
                         "window.renderAlerts && window.renderAlerts()")
                     return
@@ -1125,10 +1239,7 @@ class AlertWindowManager:
                     # the window here; an unreferenced, frameless, always-on-top
                     # window could not otherwise be closed.
                     self._destroy_locked()
-            # 90 = alert.html's .head + .wrap padding, 130 = one .row (padding,
-            # three text lines, the optional .away badge, the dismiss button).
-            # Re-measure both if those rules in alert.html change.
-            height = min(460, 90 + 130 * pending_count)
+            height = self.height_for(pending_count)
             x, y = self._corner(height)
             # Record the current count in case create_window registers a window
             # and then fails. Any orphaned window must be destroyed, not merely
@@ -1162,10 +1273,18 @@ class AlertWindowManager:
             pass
         self.window = None
 
-    def close_if_empty(self):
+    def refit_or_close(self):
+        """Close the window once the last alert is gone, else refit the rest.
+
+        Dismissing two of three alerts must shrink the window too; otherwise it
+        keeps the height of the largest batch it ever held.
+        """
         with self.lock:
-            if not ALERTS.pending:
+            pending_count = len(ALERTS.pending)
+            if not pending_count:
                 self._destroy_locked()
+            elif self.window is not None:
+                self._resize_locked(pending_count)
 
     def toast(self, events):
         """Supplement the window with a system toast, which disappears itself."""
@@ -1205,11 +1324,11 @@ def process_reset_alerts(providers):
                 ALERTS.dismiss_all()
             ALERTS.save()
         _FIRST_COMPARE = False
-        # ALERTS_LOCK is already released. close_if_empty acquires the window's
+        # ALERTS_LOCK is already released. refit_or_close acquires the window's
         # own lock, so these locks are never nested in either order. Disabling
         # alerts must also remove those already on screen; otherwise the window
         # would retain entries that no longer exist.
-        ALERT_WINDOW.close_if_empty()
+        ALERT_WINDOW.refit_or_close()
         return []
 
     # Read, modify, and write ALERTS as one operation under a single lock so
@@ -1507,9 +1626,10 @@ class JsApi:
                 win.resize(w["width"], w["height"])
             except Exception as exc:
                 _log_failure("window settings apply", exc)
-            # The tray menu and tooltip are built once per language.
+            # The tray menu and tooltip both hold rendered text, so both have
+            # to be redrawn when the language changes.
             if CFG["language"] != old_lang:
-                TRAY.update_tooltip()
+                TRAY.apply_language()
             return {
                 "ok": True,
                 "config": config_for_ui(),
@@ -1553,14 +1673,22 @@ def main():
     # normalize_config guarantees every key here, so index directly rather than
     # restating defaults that would silently diverge from DEFAULT_CONFIG.
     w = CFG["window"]
+    # webview.screens is a lazy module property, not a method: reading it is
+    # what enumerates the monitors, so resolve it inside the guard.
+    try:
+        screens = list(webview.screens)
+    except Exception as exc:
+        _log_failure("screen enumeration", exc)
+        screens = None
+    x, y = visible_position(w["x"], w["y"], w["width"], w["height"], screens)
     window = webview.create_window(
         "AI Usage",
         url=os.path.join(APP_DIR, "ui.html"),
         js_api=JsApi(),
         width=w["width"],
         height=w["height"],
-        x=w["x"],
-        y=w["y"],
+        x=x,
+        y=y,
         frameless=True,
         easy_drag=False,
         on_top=w["on_top"],
@@ -1568,6 +1696,7 @@ def main():
         background_color="#101012",
     )
     STATE.main_window = window
+    window.events.closing += save_geometry_on_close(window)
     # pywebview 6.2.1 winforms backend bug: create_window() sets the Form's
     # outer Size *before* switching FormBorderStyle to None for frameless
     # windows. .NET preserves ClientSize across that border-style change, so
@@ -1612,9 +1741,6 @@ def main():
     STATE.shutdown_event.set()
     STATE.refresh_wake_event.set()
     TRAY.stop()
-    # If this was not an exit through X or the tray (for example, an external
-    # close), geometry has not yet been saved, so save it here. Otherwise no-op.
-    persist_window_geometry(window)
 
 
 if __name__ == "__main__":

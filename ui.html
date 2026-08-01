@@ -522,6 +522,19 @@ function fmtClock(epoch){
   const same = dt.toDateString() === today.toDateString();
   return same ? clock : dt.toLocaleDateString([], {day:"numeric", month:"short"}) + " " + clock;
 }
+/* The "resets in" text is the only markup that goes stale on its own, so it
+   carries its own epoch and gets rewritten in place by tickResets(). Redrawing
+   the whole page instead would reset the login button, restart the bar
+   transitions and drop keyboard focus. */
+function resetsIn(epoch){
+  if(!epoch) return "<span></span>";
+  return `<span class="resets-in" data-resets-at="${epoch}">${t("resetsIn")} ${fmtCountdown(epoch)}</span>`;
+}
+function tickResets(){
+  for(const el of document.querySelectorAll(".resets-in")){
+    el.textContent = t("resetsIn") + " " + fmtCountdown(Number(el.dataset.resetsAt));
+  }
+}
 function pctText(w){
   if(w.remaining_pct == null) return "—";
   return (Math.round(w.remaining_pct*10)/10).toLocaleString(LANG === "en" ? "en-US" : "ru-RU");
@@ -600,7 +613,7 @@ function renderOverview(){
       for(const win of wins){
         html += `<div class="sub">
             <span>${esc(t(win.label))} · ${win.remaining_pct != null ? pctText(win) + "% " : ""}${t("remaining")}</span>
-            <span>${win.resets_at ? t("resetsIn") + " " + fmtCountdown(win.resets_at) : ""}</span>
+            ${resetsIn(win.resets_at)}
           </div>`;
         html += usageBar(win);
       }
@@ -656,7 +669,7 @@ function renderDetail(id){
     html += usageBar(w);
     if(w.resets_at){
       html += `<div class="reset">
-        <span>${t("resetsIn")} ${fmtCountdown(w.resets_at)}</span>
+        ${resetsIn(w.resets_at)}
         <span>${fmtClock(w.resets_at)}</span></div>`;
     }
     html += `</div>`;
@@ -996,8 +1009,8 @@ window.addEventListener("pywebviewready", () => {
   bootstrapped = true;
   pull();
   setInterval(() => pull(false), 5000);
-  // Redraw between backend refreshes so the "resets in" countdowns advance.
-  setInterval(() => { if(DATA) renderAll(); }, 30000);
+  // Advance the "resets in" countdowns between backend refreshes.
+  setInterval(tickResets, 30000);
   setInterval(tickCountdown, 1000);
   updateTitles();
   let refreshDebounce = false;
