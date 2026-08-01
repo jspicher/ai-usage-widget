@@ -1,4 +1,4 @@
-# AI Usage Widget for Windows -- Claude Code, Codex CLI & OpenRouter Usage Tracker
+# <img src="icon/512.png" alt="AI Usage Widget icon" width="48" height="48"> AI Usage Widget for Windows -- Claude Code, Codex CLI & OpenRouter Usage Tracker
 
 A free, open-source Windows desktop widget for monitoring **Claude Code**, **Codex CLI**, and **OpenRouter** usage in real time. It shows session and weekly quotas, reset countdowns, account status, and an OpenRouter dollar balance in an always-on-top window and the Windows system tray -- plus a persistent alert when a weekly quota resets.
 
