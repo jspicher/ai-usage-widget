@@ -27,6 +27,7 @@ Use it as a:
 
 - Real-time usage for Claude Code, Codex CLI, and OpenRouter
 - Session and weekly usage shown together, each with its own remaining percentage and reset countdown
+- Optional daily pacing guides divide every weekly usage bar into seven equal segments and mark the current cycle day; enabled by default
 - OpenRouter credit balance in dollars, since it isn't a time-windowed quota
 - Plan and account status
 - Additional model limits when available
@@ -37,7 +38,7 @@ Use it as a:
 2. **Claude** -- session, weekly usage, and Opus weekly usage when available
 3. **Codex** -- weekly usage, plan, and additional model limits. Some plans return only a weekly window and no session window; the card reflects whatever the API actually reports
 4. **OpenRouter** -- remaining credit balance, total and used, and spend for the current week
-5. **Settings** -- refresh interval, window size, language, always-on-top mode, and the weekly reset alert toggle
+5. **Settings** -- refresh interval, window size, language, always-on-top mode, daily weekly-bar markers, and the weekly reset alert toggle
 
 ### Status indicators
 
@@ -46,6 +47,12 @@ Use it as a:
 - **Expired** -- login is required
 - **Red usage bar** -- 85% or more of the limit has been consumed
 - **Refresh countdown** -- seconds until the next automatic update
+
+### Weekly pacing guides
+
+Weekly usage bars are divided into seven equal day slots by six white markers. A white dot identifies the current day of that limit's cycle, calculated independently from its reset time. Because the bar measures quota remaining, day 1 is the rightmost slot and day 7 is the leftmost: a fill ending to the right of the dot is ahead of an even usage pace, while a fill ending to its left is behind. Windows without a valid reset time keep the dividers but omit the dot.
+
+The guides are enabled by default. Use **Settings > Display > Daily markers on weekly bars** to hide or show both the dividers and cycle-day dots.
 
 ### Weekly reset alerts
 
@@ -127,7 +134,7 @@ See [Build a Windows executable](#build-a-windows-executable) below if you'd rat
 
 ![OpenRouter credit balance](preview/shot_openrouter.png)
 
-**Settings** -- refresh interval, language, window size, the weekly reset alert toggle, and read-only connector status.
+**Settings** -- refresh interval, language, window size, the daily marker and weekly reset alert toggles, and read-only connector status.
 
 ![Widget settings](preview/shot_settings.png)
 
@@ -156,6 +163,7 @@ The Settings screen supports:
 - Refresh interval: 15-600 seconds
 - Window width and height, side by side (200-800 px wide, 300-1200 px tall)
 - Always-on-top mode
+- Daily markers and current-cycle-day dots on weekly bars (enabled by default)
 - Weekly reset alert on/off
 - Read-only connector status for each provider (connected / not configured, and where the credential came from)
 - Russian and English interface languages
@@ -170,6 +178,9 @@ Example `config.json`:
 {
   "language": "en",
   "refresh_interval_sec": 300,
+  "display": {
+    "daily_markers": true
+  },
   "reset_alert": {
     "enabled": true,
     "pct_jump_threshold": 10,
@@ -189,7 +200,7 @@ Only documented configuration keys are retained in memory. Unsupported or
 retired hand-added keys are ignored when loading and are omitted the next time
 the widget saves `config.json`.
 
-Defaults are 300-second refresh, English, and a 380x400 window. Russian is still available from the language dropdown, it's just no longer the default.
+Defaults are 300-second refresh, English, a 380x400 window, and visible weekly pacing guides. Russian is still available from the language dropdown, it's just no longer the default.
 
 The window remembers a manual drag-resize the same way it remembers position -- not just where you left it, but the size you last set it to.
 

@@ -64,6 +64,9 @@ REFRESH_MAX_SEC = 600
 
 DEFAULT_CONFIG = {
     "refresh_interval_sec": 300,
+    "display": {
+        "daily_markers": True,
+    },
     "reset_alert": {
         "enabled": True,
         "pct_jump_threshold": 10,
@@ -209,6 +212,13 @@ def normalize_config(value):
         REFRESH_MIN_SEC,
         REFRESH_MAX_SEC,
         integer=True,
+    )
+
+    source_display = (
+        source.get("display") if isinstance(source.get("display"), dict) else {})
+    cfg["display"]["daily_markers"] = _bool(
+        source_display.get("daily_markers"),
+        DEFAULT_CONFIG["display"]["daily_markers"],
     )
 
     source_window = source.get("window") if isinstance(source.get("window"), dict) else {}

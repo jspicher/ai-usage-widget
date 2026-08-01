@@ -60,6 +60,7 @@ class TestConfig(WidgetTestCase):
         self.assertEqual(cfg["window"]["height"], 400)
         self.assertEqual(cfg["language"], "ru")
         self.assertEqual(cfg["refresh_interval_sec"], 300)
+        self.assertTrue(cfg["display"]["daily_markers"])
 
     def test_normalize_clamps_supported_values_and_drops_retired_config(self):
         cfg = widget.normalize_config({
@@ -77,6 +78,7 @@ class TestConfig(WidgetTestCase):
                 "pct_jump_threshold": -5,
                 "resets_at_advance_sec": "invalid",
             },
+            "display": {"daily_markers": "yes"},
             "opencode": {"usage_endpoint": "https://example.invalid"},
         })
         self.assertEqual(cfg["refresh_interval_sec"], 600)
@@ -87,7 +89,14 @@ class TestConfig(WidgetTestCase):
         )
         self.assertEqual(cfg["reset_alert"]["pct_jump_threshold"], 0)
         self.assertEqual(cfg["reset_alert"]["resets_at_advance_sec"], 3600)
+        self.assertTrue(cfg["display"]["daily_markers"])
         self.assertNotIn("opencode", cfg)
+
+    def test_daily_markers_can_be_disabled(self):
+        cfg = widget.normalize_config({
+            "display": {"daily_markers": False},
+        })
+        self.assertFalse(cfg["display"]["daily_markers"])
 
     def test_invalid_hand_edited_values_use_documented_defaults(self):
         cfg = widget.normalize_config({

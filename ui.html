@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>AI Usage</title>
+<link rel="icon" href="icon/app.ico">
 <style>
   :root{
     --shell:#101012; --shell-line:#232327; --shell-text:#8b8b93;
@@ -80,8 +81,19 @@
   .strip .pct{margin-left:auto; font-size:22px; font-weight:600}
   .strip .sub{display:flex; justify-content:space-between; font-size:10.5px; margin-top:2px}
   .strip .bar + .sub{margin-top:8px}
-  .bar{height:5px; border-radius:3px; margin-top:9px; overflow:hidden}
+  .bar{height:5px; border-radius:3px; margin-top:9px; position:relative}
   .bar i{display:block; height:100%; border-radius:3px; transition:width .6s ease}
+  .day-marker{
+    position:absolute; z-index:1; top:50%; width:1px; height:21px;
+    background:#fff; transform:translate(-50%,-50%); pointer-events:none;
+    box-shadow:0 1px 2px rgba(0,0,0,.4), 0 0 1px rgba(0,0,0,.3);
+  }
+  .cycle-day-dot{
+    position:absolute; z-index:2; top:50%; width:11px; height:11px;
+    border:1px solid rgba(0,0,0,.16); border-radius:50%; background:#fff;
+    transform:translate(-50%,-50%); pointer-events:none;
+    box-shadow:0 1px 3px rgba(0,0,0,.42), 0 0 1px rgba(0,0,0,.28);
+  }
 
   /* Claude strip / page */
   .th-claude{background:var(--cl-bg); color:var(--cl-ink)}
@@ -292,6 +304,8 @@ const L10N = {
     saveFailed: "Сохранить настройки не удалось",
     general: "Общие",
     winSection: "Окно",
+    displaySection: "Отображение",
+    dailyMarkers: "Дневные метки на недельных шкалах",
     credits: "Кредиты",
     spentWeek: "за неделю",
     tokenStale: "⚠ токен истёк — открой CLI и залогинься",
@@ -373,6 +387,8 @@ const L10N = {
     saveFailed: "Could not save settings",
     general: "General",
     winSection: "Window",
+    displaySection: "Display",
+    dailyMarkers: "Daily markers on weekly bars",
     credits: "Credits",
     spentWeek: "this week",
     tokenStale: "⚠ token expired — open CLI and login",
@@ -528,6 +544,36 @@ function overviewWins(p){
   return out;
 }
 
+function isWeeklyWindow(win){
+  return win && (win.id === "week" || String(win.id || "").startsWith("week_"));
+}
+
+function cycleDayDot(win){
+  const cycleSeconds = 7 * 86400;
+  const remainingSeconds = Number(win?.resets_at) - now();
+  if(!Number.isFinite(remainingSeconds) || remainingSeconds <= 0 || remainingSeconds > cycleSeconds){
+    return "";
+  }
+  const elapsedDays = Math.floor((cycleSeconds - remainingSeconds) / 86400);
+  const dayIndex = Math.max(0, Math.min(6, elapsedDays));
+  const slotFromLeft = 6 - dayIndex;
+  const left = ((slotFromLeft + 0.5) / 7) * 100;
+  return `<span class="cycle-day-dot" style="left:${left}%" aria-hidden="true"></span>`;
+}
+
+function usageBar(win, low){
+  const weekly = isWeeklyWindow(win);
+  const showMarkers = weekly && DATA?._config?.display?.daily_markers !== false;
+  const markers = showMarkers
+    ? Array.from({length:6}, (_, index) =>
+        `<span class="day-marker" style="left:${((index + 1) / 7) * 100}%" aria-hidden="true"></span>`
+      ).join("")
+    : "";
+  const cycleDot = showMarkers ? cycleDayDot(win) : "";
+  return `<div class="bar ${low || ""} ${weekly ? "weekly-bar" : ""}">
+    <i style="width:${win.remaining_pct ?? 0}%"></i>${markers}${cycleDot}</div>`;
+}
+
 /* ---------- overview ---------- */
 function renderOverview(){
   const el = $("#page-overview");
@@ -561,7 +607,7 @@ function renderOverview(){
             <span>${esc(t(win.label))} · ${win.remaining_pct != null ? pctText(win) + "% " : ""}${t("remaining")}</span>
             <span>${win.resets_at ? t("resetsIn") + " " + fmtCountdown(win.resets_at) : ""}</span>
           </div>`;
-        html += `<div class="bar ${low}"><i style="width:${win.remaining_pct ?? 0}%"></i></div>`;
+        html += usageBar(win, low);
       }
     } else {
       html += `<div class="err">${esc(terr(p.error) || t("noData"))}</div>`;
@@ -613,7 +659,7 @@ function renderDetail(id){
         <span class="label">${esc(t(w.label))}</span>
         <span class="bigpct">${pctText(w)}<small> % ${t("remaining")}</small></span>
       </div>`;
-    html += `<div class="bar ${low}"><i style="width:${w.remaining_pct ?? 0}%"></i></div>`;
+    html += usageBar(w, low);
     if(w.resets_at){
       html += `<div class="reset">
         <span>${t("resetsIn")} ${fmtCountdown(w.resets_at)}</span>
@@ -691,6 +737,7 @@ function syncSettingsControls(cfg){
   $("#cfg-width").value = cfg.window?.width ?? 380;
   $("#cfg-height").value = cfg.window?.height ?? 400;
   $("#cfg-ontop").checked = cfg.window?.on_top !== false;
+  $("#cfg-day-markers").checked = cfg.display?.daily_markers !== false;
   $("#cfg-alert").checked = cfg.reset_alert?.enabled !== false;
 }
 
@@ -782,6 +829,16 @@ function mountSettings(cfg){
         </div>
       </div>
       <div class="section">
+        <div class="section-title">${t("displaySection")}</div>
+        <div class="toggle-row">
+          <label for="cfg-day-markers">${t("dailyMarkers")}</label>
+          <label class="switch">
+            <input type="checkbox" id="cfg-day-markers" aria-label="${esc(t("dailyMarkers"))}">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="section">
         <div class="section-title">${t("connectors")}</div>
         <div id="settings-connectors"></div>
       </div>
@@ -815,6 +872,7 @@ function mountSettings(cfg){
         height: parseInt($("#cfg-height").value, 10) || 400,
         on_top: $("#cfg-ontop").checked,
       },
+      display: { daily_markers: $("#cfg-day-markers").checked },
       reset_alert: { enabled: $("#cfg-alert").checked },
     };
     saveButton.disabled = true;
@@ -843,6 +901,7 @@ function mountSettings(cfg){
         $("#saved-msg").textContent = t("saved");
         $("#saved-msg").style.display = "block";
       } else {
+        renderAll();
         message.textContent = t("saved");
         message.style.display = "block";
         syncSettingsControls(result.config);
@@ -1002,6 +1061,7 @@ setTimeout(() => {
       language:demoParams.get("lang") === "ru" ? "ru" : "en",
       refresh_interval_sec:300,
       window:{x:null,y:null,width:380,height:400,on_top:true},
+      display:{daily_markers:true},
       reset_alert:{enabled:true,pct_jump_threshold:10,resets_at_advance_sec:3600},
       /* No openrouter section: config_for_ui strips it before it crosses. */
     },
@@ -1032,6 +1092,7 @@ setTimeout(() => {
         ...DATA._config,
         ...cfg,
         window:{...DATA._config.window,...(cfg.window || {})},
+        display:{...DATA._config.display,...(cfg.display || {})},
         reset_alert:{...DATA._config.reset_alert,...(cfg.reset_alert || {})},
       };
       DATA.refresh_interval_sec = DATA._config.refresh_interval_sec;

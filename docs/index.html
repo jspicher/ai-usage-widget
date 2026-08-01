@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Usage Widget for Windows – Claude Code & Codex Usage Tracker</title>
-  <meta name="description" content="Free Windows desktop widget for tracking Claude Code and Codex CLI usage limits, weekly quotas, reset times and account status in real time.">
+  <meta name="description" content="Free Windows desktop widget for tracking Claude Code and Codex CLI usage limits, weekly pacing, reset times and account status in real time.">
   <meta name="robots" content="index,follow,max-image-preview:large">
   <link rel="canonical" href="https://trafalgardi.github.io/ai-usage-widget/">
   <meta property="og:type" content="website">
   <meta property="og:title" content="AI Usage Widget for Windows">
-  <meta property="og:description" content="Track Claude Code and Codex CLI usage limits, weekly quotas and reset times from a Windows desktop widget.">
+  <meta property="og:description" content="Track Claude Code and Codex CLI usage limits, weekly pacing and reset times from a Windows desktop widget.">
   <meta property="og:url" content="https://trafalgardi.github.io/ai-usage-widget/">
   <meta property="og:image" content="https://raw.githubusercontent.com/Trafalgardi/ai-usage-widget/master/preview/shot_overview.png">
   <meta name="twitter:card" content="summary_large_image">
@@ -80,9 +80,10 @@
       <h2>Claude Code and Codex usage monitor</h2>
       <div class="grid">
         <article class="card"><h3>Real-time quotas</h3><p class="muted">See current 5-hour sessions, weekly usage and reset times without reopening each CLI.</p></article>
+        <article class="card"><h3>Weekly pacing</h3><p class="muted">Seven equal day slots and a current-cycle-day dot show whether weekly quota use is ahead of or behind an even pace.</p></article>
         <article class="card"><h3>Windows tray</h3><p class="muted">Keep percentage indicators visible in the system tray while the app updates in the background.</p></article>
         <article class="card"><h3>Account status</h3><p class="muted">Detect active, expiring and expired credentials and launch the appropriate CLI login flow.</p></article>
-        <article class="card"><h3>Local configuration</h3><p class="muted">Choose refresh frequency, window size, language and always-on-top behavior.</p></article>
+        <article class="card"><h3>Local configuration</h3><p class="muted">Choose refresh frequency, window size, language, pacing guides and always-on-top behavior.</p></article>
       </div>
     </div>
   </section>
@@ -100,6 +101,7 @@
     <div class="wrap">
       <h2>Frequently asked questions</h2>
       <details><summary>What does the widget track?</summary><p class="muted">It displays Claude Code and Codex CLI session limits, weekly quotas, reset countdowns and account status when exposed by the services.</p></details>
+      <details><summary>How do the weekly pacing guides work?</summary><p class="muted">Six markers divide a weekly bar into seven days. A white dot moves one slot per cycle day, from right to left because the bar shows quota remaining.</p></details>
       <details><summary>Is this an API billing tracker?</summary><p class="muted">No. It focuses on subscription and CLI usage limits rather than API token costs.</p></details>
       <details><summary>Does it work on Windows 10 and Windows 11?</summary><p class="muted">Yes. It is designed for current Windows 10 and Windows 11 installations with WebView2 available.</p></details>
       <details><summary>Is it affiliated with Anthropic or OpenAI?</summary><p class="muted">No. AI Usage Widget is an independent open-source project.</p></details>
