@@ -734,6 +734,88 @@ class TestWindowGeometry(WidgetTestCase):
         self.assertFalse(widget._GEOMETRY_SAVED)
 
 
+class FakeTrayWindow:
+    """Track which of the two mutually exclusive endings a window reached."""
+
+    def __init__(self):
+        self.hidden = False
+        self.destroyed = False
+
+    def hide(self):
+        self.hidden = True
+
+    def destroy(self):
+        self.destroyed = True
+
+
+@contextlib.contextmanager
+def tray_state(window, icon):
+    """Drive TrayManager.can_host_window() by setting both of its references."""
+    with (
+        mock.patch.object(widget.TRAY, "window_ref", window),
+        mock.patch.object(widget.TRAY, "icon", icon),
+    ):
+        yield
+
+
+class TestCloseToTray(WidgetTestCase):
+    """Cover the X button's split behavior: hide to the tray, quit without one.
+
+    Every test here blocks os._exit. shutdown_app() calls it when the window is
+    unreachable, and an unguarded regression in close() would take the whole
+    test process down with status 0 -- the suite would stop early and still
+    look green. Blocking it turns that into an ordinary, visible failure.
+    """
+
+    def setUp(self):
+        super().setUp()
+        widget.STATE = widget.State()
+        patcher = mock.patch.object(
+            widget.os, "_exit",
+            side_effect=AssertionError("shutdown_app hit its hard-exit path"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_close_hides_the_window_instead_of_quitting(self):
+        """The X button keeps the process alive so polling and reset alerts
+        survive an idle click; only the tray's Exit command quits."""
+        window = FakeTrayWindow()
+        with tray_state(window, object()):
+            widget.JsApi().close()
+        self.assertTrue(window.hidden)
+        self.assertFalse(window.destroyed)
+        self.assertFalse(widget.STATE.shutdown_event.is_set())
+
+    def test_close_falls_back_to_quitting_when_the_tray_cannot_host(self):
+        """Hiding with no tray would strand the user: the window is frameless,
+        so there is no taskbar entry and no icon left to restore it from."""
+        window = FakeTrayWindow()
+        for window_ref, icon in ((None, object()), (window, None), (None, None)):
+            with self.subTest(window_ref=bool(window_ref), icon=bool(icon)):
+                window.hidden = False
+                widget.STATE = widget.State()
+                with tray_state(window_ref, icon):
+                    with mock.patch.object(widget, "shutdown_app") as quit_app:
+                        widget.JsApi().close()
+                self.assertFalse(window.hidden)
+                quit_app.assert_called_once_with()
+
+    def test_tray_exit_still_destroys_the_window(self):
+        """shutdown_app must stay on the destroy path. While the window lives,
+        webview.start() never returns and the process hangs with a frozen
+        always-on-top widget that only Task Manager can clear."""
+        window = FakeTrayWindow()
+        widget.STATE.main_window = window
+        with config_sandbox():
+            widget.CFG = widget.normalize_config({})
+            widget.CONFIG_HEALTH = healthy_config_state()
+            with mock.patch.object(widget, "_GEOMETRY_SAVED", True):
+                widget.TRAY._on_quit(None, None)
+        self.assertTrue(window.destroyed)
+        self.assertFalse(window.hidden)
+        self.assertTrue(widget.STATE.shutdown_event.is_set())
+
+
 class TestCli(unittest.TestCase):
     def test_exe_is_run_directly(self):
         with mock.patch.object(

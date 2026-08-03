@@ -873,10 +873,14 @@ ALERTS_LOCK = threading.Lock()
 _FIRST_COMPARE = True
 
 
-# Save geometry exactly once during the process lifetime. Both exit paths (the
-# X button and the tray's Exit command) ultimately return from webview.start()
-# to main(). Without this flag, the same exit would write the config twice,
-# with the second write reading an already-destroyed window.
+# Save geometry exactly once during the process lifetime. Every exit path (the
+# tray's Exit command, Alt+F4, and session logoff) ultimately returns from
+# webview.start() to main(). Without this flag, the same exit would write the
+# config twice, with the second write reading an already-destroyed window.
+#
+# This is also why closing to the tray does NOT persist geometry: latching the
+# flag on a hide would silently skip the save at the real exit, losing any drag
+# made after the first minimize.
 _GEOMETRY_LOCK = threading.Lock()
 _GEOMETRY_SAVED = False
 
@@ -948,7 +952,8 @@ def visible_position(x, y, width, height, screens):
 
 
 def shutdown_app():
-    """Handle both exit paths: the X button and the tray's Exit command.
+    """Quit the app: the tray's Exit command, and the X button only when the
+    tray is unavailable to host the hidden window.
 
     The window MUST be destroyed. While it remains alive, webview.start() in
     main() will not return. Stopping the tray first would leave the process
@@ -1112,13 +1117,25 @@ class TrayManager:
             self.window_ref.show()
 
     def _on_quit(self, icon, item):
-        # Follow the same path as the X button (JsApi.close): save geometry and
-        # destroy the window. main() stops the tray icon after webview.start()
-        # returns; stopping it here would hide the tray before the window closes.
+        # The ONLY route that quits while the tray is alive -- JsApi.close now
+        # hides the window instead. Must save geometry and destroy the window:
+        # main() stops the tray icon after webview.start() returns, so stopping
+        # it here would drop the tray before the window closes.
         shutdown_app()
 
     def _on_refresh(self, icon, item):
         threading.Thread(target=refresh_all, daemon=True).start()
+
+    def can_host_window(self):
+        """Report whether a hidden window could still be restored from here.
+
+        Hiding the window is only safe while something can bring it back. Both
+        references are required: window_ref is None until start() runs (it
+        returns early when pystray is missing), and icon is None once stop()
+        has run. Without either, a hidden widget would be unreachable -- no
+        icon to right-click, and the frameless window has no taskbar entry.
+        """
+        return bool(self.window_ref and self.icon)
 
     def hide_window(self):
         if self.window_ref:
@@ -1643,12 +1660,24 @@ class JsApi:
             }
 
     def close(self):
+        """Close the window to the tray; only the tray's Exit command quits.
+
+        The X button hides rather than exits so the widget keeps polling and
+        keeps its reset alerts armed after an idle click. It falls back to a
+        real shutdown when the tray cannot host the hidden window, because
+        hiding it then would leave no way to reach the app short of Task
+        Manager -- strictly worse than the exit this button used to perform.
+        """
+        if TRAY.can_host_window():
+            TRAY.hide_window()
+            return
         shutdown_app()
 
     def minimize_to_tray(self):
-        # window_ref is only ever set by TrayManager.start(), which returns
-        # early when the tray is unavailable -- so it implies TRAY_AVAILABLE.
-        if TRAY.window_ref:
+        # No fallback to shutdown here, unlike close(): this button is labeled
+        # "minimize to tray", so with no tray to minimize into, doing nothing is
+        # the honest outcome. The X button next to it still quits.
+        if TRAY.can_host_window():
             TRAY.hide_window()
             return True
         return False
