@@ -232,7 +232,7 @@
     <button id="btn-refresh" title="Refresh" aria-label="Refresh">⟳</button>
     <button id="btn-pin" title="Always on top" aria-label="Always on top">◉</button>
     <button id="btn-tray" title="Minimize to tray" aria-label="Minimize to tray">⎯</button>
-    <button id="btn-close" title="Close" aria-label="Close">✕</button>
+    <button id="btn-close" title="Close to tray" aria-label="Close to tray">✕</button>
   </header>
   <div class="app-message" id="app-message" role="alert" aria-live="assertive" hidden></div>
 
@@ -291,7 +291,7 @@ const L10N = {
     refreshTitle: "Обновить",
     pinTitle: "Поверх окон",
     trayTitle: "В трей",
-    closeTitle: "Закрыть",
+    closeTitle: "Свернуть в трей",
     loadingData: "Загрузка данных…",
     refreshInterval: "Интервал обновления (секунды)",
     width: "Ширина (px)",
@@ -374,7 +374,7 @@ const L10N = {
     refreshTitle: "Refresh",
     pinTitle: "Always on top",
     trayTitle: "Minimize to tray",
-    closeTitle: "Close",
+    closeTitle: "Close to tray",
     loadingData: "Loading data…",
     refreshInterval: "Refresh interval (seconds)",
     width: "Width (px)",
@@ -1029,6 +1029,8 @@ window.addEventListener("pywebviewready", () => {
       }, 5000);
     }
   });
+  // Hides to the tray rather than quitting; only the tray's Exit item quits.
+  // Falls back to a real shutdown when there is no tray to be restored from.
   $("#btn-close").addEventListener("click", () => window.pywebview.api.close());
   $("#btn-tray").addEventListener("click", () => {
     // Returns false when pystray is unavailable; there is no fallback to
