@@ -17,6 +17,8 @@ import json
 import math
 import os
 import shutil
+import socket
+import socketserver
 import subprocess
 import sys
 import threading
@@ -61,6 +63,11 @@ ERROR_LOG_PATH = os.path.join(DATA_DIR, "widget-error.log")
 SUPPORTED_LANGUAGES = ("en", "ru")
 REFRESH_MIN_SEC = 15
 REFRESH_MAX_SEC = 600
+CONTROL_HOST = "127.0.0.1"
+CONTROL_PORT = 47653
+CONTROL_PROTOCOL = "ai-usage-widget/1"
+CONTROL_MESSAGE_LIMIT = 1024
+SINGLE_INSTANCE_MUTEX_NAME = r"Local\AIUsageWidget.SingleInstance"
 # A jump of less than one point is not a reset. resetwatch reports a reset when
 # remaining_pct rises by at least this much, so a hand-edited 0 (or a negative
 # value, which clamps) would fire on every poll where the balance merely failed
@@ -843,10 +850,13 @@ class State:
     def __init__(self):
         self.lock = threading.Lock()
         self.refresh_lock = threading.Lock()
+        self.window_visibility_lock = threading.RLock()
         self.shutdown_event = threading.Event()
         self.refresh_wake_event = threading.Event()
+        self.ready_event = threading.Event()
         self.snapshot = {"updated_at": None, "providers": {}}
         self.main_window = None
+        self.main_window_hidden = False
 
 
 STATE = State()
@@ -855,6 +865,298 @@ CFG = load_config()
 # success. Guards against persisting a chrome-shrunken size on exit if that resize
 # ever fails -- see persist_window_geometry().
 _INITIAL_SIZE_OK = False
+
+
+def _focus_main_window():
+    """Restore and activate this process's main window on Windows.
+
+    ``Window.show()`` makes a pywebview window visible but does not reliably
+    activate a window restored from the tray. Attaching this control thread to
+    the current foreground and target UI threads gives SetForegroundWindow the
+    same semantics as clicking the taskbar entry, while leaving the configured
+    always-on-top preference untouched.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        user32.FindWindowW.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.ShowWindowAsync.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.ShowWindowAsync.restype = wintypes.BOOL
+        user32.IsIconic.argtypes = [wintypes.HWND]
+        user32.IsIconic.restype = wintypes.BOOL
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.AttachThreadInput.argtypes = [
+            wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+        user32.AttachThreadInput.restype = wintypes.BOOL
+        user32.BringWindowToTop.argtypes = [wintypes.HWND]
+        user32.BringWindowToTop.restype = wintypes.BOOL
+        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        user32.SetForegroundWindow.restype = wintypes.BOOL
+        user32.SetFocus.argtypes = [wintypes.HWND]
+        user32.SetFocus.restype = wintypes.HWND
+        kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+        hwnd = user32.FindWindowW(None, "AI Usage")
+        if not hwnd:
+            return False
+
+        process_id = wintypes.DWORD()
+        target_thread = user32.GetWindowThreadProcessId(
+            hwnd, ctypes.byref(process_id))
+        if process_id.value != os.getpid():
+            return False
+
+        user32.ShowWindowAsync(hwnd, 9 if user32.IsIconic(hwnd) else 5)
+        current_thread = kernel32.GetCurrentThreadId()
+        foreground = user32.GetForegroundWindow()
+        foreground_thread = (
+            user32.GetWindowThreadProcessId(foreground, None)
+            if foreground else 0
+        )
+        attached = []
+        for thread_id in {foreground_thread, target_thread}:
+            if thread_id and thread_id != current_thread:
+                if user32.AttachThreadInput(current_thread, thread_id, True):
+                    attached.append(thread_id)
+        try:
+            user32.BringWindowToTop(hwnd)
+            activated = bool(user32.SetForegroundWindow(hwnd))
+            user32.SetFocus(hwnd)
+            return activated
+        finally:
+            for thread_id in attached:
+                user32.AttachThreadInput(current_thread, thread_id, False)
+    except Exception as exc:
+        _log_failure("window activation", exc)
+        return False
+
+
+def show_main_window():
+    """Show, restore, and focus the existing widget window."""
+    with STATE.window_visibility_lock:
+        window = STATE.main_window
+        if window is None:
+            return False
+        try:
+            window.show()
+        except Exception as exc:
+            _log_failure("window show", exc)
+            return False
+        STATE.main_window_hidden = False
+        _focus_main_window()
+        return True
+
+
+def _is_main_window_hidden():
+    """Use native state when available, with tracked state as a fallback."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+            user32.FindWindowW.restype = wintypes.HWND
+            user32.GetWindowThreadProcessId.argtypes = [
+                wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+            user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+            user32.IsWindowVisible.argtypes = [wintypes.HWND]
+            user32.IsWindowVisible.restype = wintypes.BOOL
+            user32.IsIconic.argtypes = [wintypes.HWND]
+            user32.IsIconic.restype = wintypes.BOOL
+
+            hwnd = user32.FindWindowW(None, "AI Usage")
+            if hwnd:
+                process_id = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(
+                    hwnd, ctypes.byref(process_id))
+                if process_id.value == os.getpid():
+                    return (
+                        not bool(user32.IsWindowVisible(hwnd))
+                        or bool(user32.IsIconic(hwnd))
+                    )
+        except Exception:
+            pass
+    return STATE.main_window_hidden
+
+
+def toggle_main_window():
+    """Hide a shown widget to the tray, or restore a hidden widget."""
+    with STATE.window_visibility_lock:
+        if STATE.main_window is None:
+            return "starting"
+        if _is_main_window_hidden():
+            return "shown" if show_main_window() else "starting"
+        return "minimized" if TRAY.hide_window() else "shown"
+
+
+def request_refresh():
+    """Start one manual refresh, or report that one is already running."""
+    if STATE.refresh_lock.locked():
+        return "busy"
+    threading.Thread(target=refresh_all, daemon=True).start()
+    return "started"
+
+
+def dispatch_control_command(command):
+    """Execute one allowlisted local-control command."""
+    if command == "show":
+        return "shown" if show_main_window() else "starting"
+    if command == "toggle":
+        return toggle_main_window()
+    if command == "refresh":
+        if not STATE.ready_event.is_set():
+            return "starting"
+        return request_refresh()
+    raise ValueError("unsupported control command")
+
+
+class _WidgetControlHandler(socketserver.StreamRequestHandler):
+    def handle(self):
+        response = {"protocol": CONTROL_PROTOCOL, "ok": False}
+        try:
+            payload = self.rfile.readline(CONTROL_MESSAGE_LIMIT + 1)
+            if not payload or len(payload) > CONTROL_MESSAGE_LIMIT:
+                raise ValueError("invalid control message length")
+            request = json.loads(payload.decode("utf-8"))
+            if request.get("protocol") != CONTROL_PROTOCOL:
+                raise ValueError("invalid control protocol")
+            status = dispatch_control_command(request.get("command"))
+            response.update(ok=True, status=status)
+        except Exception as exc:
+            response["error"] = str(exc)
+        self.wfile.write((json.dumps(response) + "\n").encode("utf-8"))
+
+
+class _WidgetControlServer(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(
+                socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def send_control_command(command, wait_seconds=0.0):
+    """Send a command to the primary instance, retrying during its startup."""
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    while True:
+        try:
+            with socket.create_connection(
+                    (CONTROL_HOST, CONTROL_PORT), timeout=0.35) as client:
+                client.settimeout(0.5)
+                request = json.dumps({
+                    "protocol": CONTROL_PROTOCOL,
+                    "command": command,
+                }) + "\n"
+                client.sendall(request.encode("utf-8"))
+                with client.makefile("rb") as response_file:
+                    raw = response_file.readline(CONTROL_MESSAGE_LIMIT + 1)
+                response = json.loads(raw.decode("utf-8"))
+                if (response.get("protocol") == CONTROL_PROTOCOL
+                        and response.get("ok") is True):
+                    return response
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.1)
+
+
+class WidgetControlChannel:
+    """Own the Windows singleton mutex and loopback command server."""
+
+    def __init__(self):
+        self.server = None
+        self.thread = None
+        self.mutex_handle = None
+
+    def _acquire_primary_instance(self):
+        if os.name != "nt":
+            return True
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.windll.kernel32
+            kernel32.CreateMutexW.argtypes = [
+                wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+            kernel32.CreateMutexW.restype = wintypes.HANDLE
+            handle = kernel32.CreateMutexW(
+                None, False, SINGLE_INSTANCE_MUTEX_NAME)
+            if not handle:
+                raise ctypes.WinError()
+            already_exists = kernel32.GetLastError() == 183
+            if already_exists:
+                kernel32.CloseHandle(handle)
+                return False
+            self.mutex_handle = handle
+            return True
+        except Exception as exc:
+            _log_failure("single-instance mutex", exc)
+            # A failed guard must not make the widget unusable. The exclusive
+            # control-port bind remains a second line of duplicate protection.
+            return True
+
+    def start_or_notify_existing(self):
+        if not self._acquire_primary_instance():
+            if send_control_command("show", wait_seconds=3.0) is None:
+                _log_failure(
+                    "existing-instance notification",
+                    RuntimeError("primary instance did not accept show"),
+                )
+            return False
+        try:
+            self.server = _WidgetControlServer(
+                (CONTROL_HOST, CONTROL_PORT), _WidgetControlHandler)
+        except OSError as exc:
+            # The mutex is the primary guard, but a protocol-compatible server
+            # already owning the port is also definitive evidence of the
+            # primary instance (for example, if mutex creation was denied).
+            if send_control_command("show", wait_seconds=0.5) is not None:
+                self._close_mutex()
+                return False
+            _log_failure("control server start", exc)
+            return True
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            name="widget-control",
+            daemon=True,
+        )
+        self.thread.start()
+        return True
+
+    def stop(self):
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+            self.server = None
+        if self.thread is not None:
+            self.thread.join(timeout=2)
+            self.thread = None
+        self._close_mutex()
+
+    def _close_mutex(self):
+        if self.mutex_handle and os.name == "nt":
+            try:
+                import ctypes
+                ctypes.windll.kernel32.CloseHandle(self.mutex_handle)
+            except Exception:
+                pass
+            self.mutex_handle = None
+
+
+CONTROL = WidgetControlChannel()
 
 # Use DATA_DIR, not APP_DIR: alert state must survive process exit even in a
 # one-file build; see the comment where DATA_DIR is defined.
@@ -1113,8 +1415,7 @@ class TrayManager:
             pass
 
     def _on_show(self, icon, item):
-        if self.window_ref:
-            self.window_ref.show()
+        show_main_window()
 
     def _on_quit(self, icon, item):
         # The ONLY route that quits while the tray is alive -- JsApi.close now
@@ -1138,8 +1439,16 @@ class TrayManager:
         return bool(self.window_ref and self.icon)
 
     def hide_window(self):
-        if self.window_ref:
-            self.window_ref.hide()
+        with STATE.window_visibility_lock:
+            if not self.can_host_window():
+                return False
+            try:
+                self.window_ref.hide()
+            except Exception as exc:
+                _log_failure("window hide", exc)
+                return False
+            STATE.main_window_hidden = True
+            return True
 
 
 TRAY = TrayManager()
@@ -1590,10 +1899,7 @@ class JsApi:
         return snap
 
     def refresh_now(self):
-        if STATE.refresh_lock.locked():
-            return False
-        threading.Thread(target=refresh_all, daemon=True).start()
-        return True
+        return request_refresh() == "started"
 
     def login_claude(self):
         return launch_cli_login("claude", ["auth", "login"])
@@ -1668,8 +1974,7 @@ class JsApi:
         hiding it then would leave no way to reach the app short of Task
         Manager -- strictly worse than the exit this button used to perform.
         """
-        if TRAY.can_host_window():
-            TRAY.hide_window()
+        if TRAY.hide_window():
             return
         shutdown_app()
 
@@ -1677,10 +1982,7 @@ class JsApi:
         # No fallback to shutdown here, unlike close(): this button is labeled
         # "minimize to tray", so with no tray to minimize into, doing nothing is
         # the honest outcome. The X button next to it still quits.
-        if TRAY.can_host_window():
-            TRAY.hide_window()
-            return True
-        return False
+        return TRAY.hide_window()
 
     def update_tray_icon(self):
         # The icon itself is static; only its tooltip needs updating. Keep this
@@ -1693,10 +1995,13 @@ class JsApi:
 
 def main():
     global webview
+    if not CONTROL.start_or_notify_existing():
+        return
     try:
         import webview  # pywebview
     except ImportError:
         print("pywebview is not installed. Run install.bat first.")
+        CONTROL.stop()
         sys.exit(1)
 
     # normalize_config guarantees every key here, so index directly rather than
@@ -1761,15 +2066,20 @@ def main():
             pass
     if TRAY_AVAILABLE:
         TRAY.start(window)
+    STATE.ready_event.set()
     # Start the polling thread only NOW, after the main window exists. Otherwise
     # the first process_reset_alerts() could call raise_alert() before the main
     # window is created, making webview.windows[0] the alert window. JsApi.close,
     # minimize_to_tray, and toggle_on_top all assume windows[0] is the main window.
     threading.Thread(target=refresh_loop, daemon=True).start()
-    webview.start(debug=False)
-    STATE.shutdown_event.set()
-    STATE.refresh_wake_event.set()
-    TRAY.stop()
+    try:
+        webview.start(debug=False)
+    finally:
+        STATE.shutdown_event.set()
+        STATE.refresh_wake_event.set()
+        STATE.ready_event.clear()
+        TRAY.stop()
+        CONTROL.stop()
 
 
 if __name__ == "__main__":
