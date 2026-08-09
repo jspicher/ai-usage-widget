@@ -109,6 +109,10 @@ install.bat
 
 Or double-click `start_widget.vbs` to launch without a console window.
 The launcher shows a clear message if `install.bat` has not been run yet.
+The widget is single-instance on Windows: launching it again shows and focuses
+the existing window instead of creating another copy. Local automation can send
+the versioned `show` and `refresh` commands over `127.0.0.1:47653`; no network
+interface is exposed.
 
 ### Build your own executable
 

@@ -50,6 +50,85 @@ class WidgetTestCase(unittest.TestCase):
         widget.STATE = self.original_state
 
 
+class TestLocalControl(WidgetTestCase):
+    def setUp(self):
+        super().setUp()
+        widget.STATE = widget.State()
+
+    def test_show_command_restores_and_focuses_existing_window(self):
+        window = mock.Mock()
+        widget.STATE.main_window = window
+        with mock.patch.object(
+                widget, "_focus_main_window", return_value=True) as focus:
+            status = widget.dispatch_control_command("show")
+        self.assertEqual(status, "shown")
+        window.show.assert_called_once_with()
+        focus.assert_called_once_with()
+
+    def test_refresh_command_waits_until_window_is_ready(self):
+        with mock.patch.object(widget, "request_refresh") as refresh:
+            self.assertEqual(
+                widget.dispatch_control_command("refresh"), "starting")
+        refresh.assert_not_called()
+
+        widget.STATE.ready_event.set()
+        with mock.patch.object(
+                widget, "request_refresh", return_value="started") as refresh:
+            self.assertEqual(
+                widget.dispatch_control_command("refresh"), "started")
+        refresh.assert_called_once_with()
+
+    def test_control_protocol_round_trip_is_loopback_and_allowlisted(self):
+        server = widget._WidgetControlServer(
+            (widget.CONTROL_HOST, 0), widget._WidgetControlHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            with (
+                mock.patch.object(widget, "CONTROL_PORT", port),
+                mock.patch.object(
+                    widget, "dispatch_control_command", return_value="shown"
+                ) as dispatch,
+            ):
+                response = widget.send_control_command("show")
+            self.assertTrue(response["ok"])
+            self.assertEqual(response["status"], "shown")
+            self.assertEqual(response["protocol"], widget.CONTROL_PROTOCOL)
+            dispatch.assert_called_once_with("show")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_secondary_instance_notifies_primary_and_exits(self):
+        channel = widget.WidgetControlChannel()
+        response = {
+            "protocol": widget.CONTROL_PROTOCOL,
+            "ok": True,
+            "status": "shown",
+        }
+        with (
+            mock.patch.object(
+                channel, "_acquire_primary_instance", return_value=False),
+            mock.patch.object(
+                widget, "send_control_command", return_value=response
+            ) as send,
+        ):
+            self.assertFalse(channel.start_or_notify_existing())
+        send.assert_called_once_with("show", wait_seconds=3.0)
+        self.assertIsNone(channel.server)
+
+    def test_manual_refresh_reports_busy_without_spawning(self):
+        widget.STATE.refresh_lock.acquire()
+        try:
+            with mock.patch.object(widget.threading, "Thread") as thread:
+                self.assertEqual(widget.request_refresh(), "busy")
+            thread.assert_not_called()
+        finally:
+            widget.STATE.refresh_lock.release()
+
+
 class TestConfig(WidgetTestCase):
     def test_load_merges_nested_values_and_preserves_defaults(self):
         with config_sandbox() as (_folder, path, _log):
