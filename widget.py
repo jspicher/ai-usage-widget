@@ -850,11 +850,13 @@ class State:
     def __init__(self):
         self.lock = threading.Lock()
         self.refresh_lock = threading.Lock()
+        self.window_visibility_lock = threading.RLock()
         self.shutdown_event = threading.Event()
         self.refresh_wake_event = threading.Event()
         self.ready_event = threading.Event()
         self.snapshot = {"updated_at": None, "providers": {}}
         self.main_window = None
+        self.main_window_hidden = False
 
 
 STATE = State()
@@ -939,16 +941,61 @@ def _focus_main_window():
 
 def show_main_window():
     """Show, restore, and focus the existing widget window."""
-    window = STATE.main_window
-    if window is None:
-        return False
-    try:
-        window.show()
-    except Exception as exc:
-        _log_failure("window show", exc)
-        return False
-    _focus_main_window()
-    return True
+    with STATE.window_visibility_lock:
+        window = STATE.main_window
+        if window is None:
+            return False
+        try:
+            window.show()
+        except Exception as exc:
+            _log_failure("window show", exc)
+            return False
+        STATE.main_window_hidden = False
+        _focus_main_window()
+        return True
+
+
+def _is_main_window_hidden():
+    """Use native state when available, with tracked state as a fallback."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+            user32.FindWindowW.restype = wintypes.HWND
+            user32.GetWindowThreadProcessId.argtypes = [
+                wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+            user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+            user32.IsWindowVisible.argtypes = [wintypes.HWND]
+            user32.IsWindowVisible.restype = wintypes.BOOL
+            user32.IsIconic.argtypes = [wintypes.HWND]
+            user32.IsIconic.restype = wintypes.BOOL
+
+            hwnd = user32.FindWindowW(None, "AI Usage")
+            if hwnd:
+                process_id = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(
+                    hwnd, ctypes.byref(process_id))
+                if process_id.value == os.getpid():
+                    return (
+                        not bool(user32.IsWindowVisible(hwnd))
+                        or bool(user32.IsIconic(hwnd))
+                    )
+        except Exception:
+            pass
+    return STATE.main_window_hidden
+
+
+def toggle_main_window():
+    """Hide a shown widget to the tray, or restore a hidden widget."""
+    with STATE.window_visibility_lock:
+        if STATE.main_window is None:
+            return "starting"
+        if _is_main_window_hidden():
+            return "shown" if show_main_window() else "starting"
+        return "minimized" if TRAY.hide_window() else "shown"
 
 
 def request_refresh():
@@ -963,6 +1010,8 @@ def dispatch_control_command(command):
     """Execute one allowlisted local-control command."""
     if command == "show":
         return "shown" if show_main_window() else "starting"
+    if command == "toggle":
+        return toggle_main_window()
     if command == "refresh":
         if not STATE.ready_event.is_set():
             return "starting"
@@ -1366,8 +1415,7 @@ class TrayManager:
             pass
 
     def _on_show(self, icon, item):
-        if self.window_ref:
-            self.window_ref.show()
+        show_main_window()
 
     def _on_quit(self, icon, item):
         # The ONLY route that quits while the tray is alive -- JsApi.close now
@@ -1391,8 +1439,16 @@ class TrayManager:
         return bool(self.window_ref and self.icon)
 
     def hide_window(self):
-        if self.window_ref:
-            self.window_ref.hide()
+        with STATE.window_visibility_lock:
+            if not self.can_host_window():
+                return False
+            try:
+                self.window_ref.hide()
+            except Exception as exc:
+                _log_failure("window hide", exc)
+                return False
+            STATE.main_window_hidden = True
+            return True
 
 
 TRAY = TrayManager()
@@ -1918,8 +1974,7 @@ class JsApi:
         hiding it then would leave no way to reach the app short of Task
         Manager -- strictly worse than the exit this button used to perform.
         """
-        if TRAY.can_host_window():
-            TRAY.hide_window()
+        if TRAY.hide_window():
             return
         shutdown_app()
 
@@ -1927,10 +1982,7 @@ class JsApi:
         # No fallback to shutdown here, unlike close(): this button is labeled
         # "minimize to tray", so with no tray to minimize into, doing nothing is
         # the honest outcome. The X button next to it still quits.
-        if TRAY.can_host_window():
-            TRAY.hide_window()
-            return True
-        return False
+        return TRAY.hide_window()
 
     def update_tray_icon(self):
         # The icon itself is static; only its tooltip needs updating. Keep this

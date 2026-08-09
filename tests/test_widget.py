@@ -58,12 +58,54 @@ class TestLocalControl(WidgetTestCase):
     def test_show_command_restores_and_focuses_existing_window(self):
         window = mock.Mock()
         widget.STATE.main_window = window
+        widget.STATE.main_window_hidden = True
         with mock.patch.object(
                 widget, "_focus_main_window", return_value=True) as focus:
             status = widget.dispatch_control_command("show")
         self.assertEqual(status, "shown")
         window.show.assert_called_once_with()
         focus.assert_called_once_with()
+        self.assertFalse(widget.STATE.main_window_hidden)
+
+    def test_toggle_command_minimizes_then_restores_existing_window(self):
+        window = mock.Mock()
+        widget.STATE.main_window = window
+        with (
+            mock.patch.object(widget.TRAY, "window_ref", window),
+            mock.patch.object(widget.TRAY, "icon", object()),
+            mock.patch.object(
+                widget, "_is_main_window_hidden", side_effect=[False, True]),
+            mock.patch.object(
+                widget, "_focus_main_window", return_value=True) as focus,
+        ):
+            self.assertEqual(
+                widget.dispatch_control_command("toggle"), "minimized")
+            self.assertTrue(widget.STATE.main_window_hidden)
+            window.hide.assert_called_once_with()
+
+            self.assertEqual(widget.dispatch_control_command("toggle"), "shown")
+
+        window.show.assert_called_once_with()
+        focus.assert_called_once_with()
+        self.assertFalse(widget.STATE.main_window_hidden)
+
+    def test_toggle_command_keeps_window_shown_without_a_tray(self):
+        window = mock.Mock()
+        widget.STATE.main_window = window
+        with (
+            mock.patch.object(widget.TRAY, "window_ref", window),
+            mock.patch.object(widget.TRAY, "icon", None),
+            mock.patch.object(
+                widget, "_is_main_window_hidden", return_value=False),
+        ):
+            status = widget.dispatch_control_command("toggle")
+        self.assertEqual(status, "shown")
+        window.hide.assert_not_called()
+        self.assertFalse(widget.STATE.main_window_hidden)
+
+    def test_toggle_command_waits_until_window_is_ready(self):
+        self.assertEqual(
+            widget.dispatch_control_command("toggle"), "starting")
 
     def test_refresh_command_waits_until_window_is_ready(self):
         with mock.patch.object(widget, "request_refresh") as refresh:
@@ -88,14 +130,14 @@ class TestLocalControl(WidgetTestCase):
             with (
                 mock.patch.object(widget, "CONTROL_PORT", port),
                 mock.patch.object(
-                    widget, "dispatch_control_command", return_value="shown"
+                    widget, "dispatch_control_command", return_value="minimized"
                 ) as dispatch,
             ):
-                response = widget.send_control_command("show")
+                response = widget.send_control_command("toggle")
             self.assertTrue(response["ok"])
-            self.assertEqual(response["status"], "shown")
+            self.assertEqual(response["status"], "minimized")
             self.assertEqual(response["protocol"], widget.CONTROL_PROTOCOL)
-            dispatch.assert_called_once_with("show")
+            dispatch.assert_called_once_with("toggle")
         finally:
             server.shutdown()
             server.server_close()
@@ -823,6 +865,9 @@ class FakeTrayWindow:
     def hide(self):
         self.hidden = True
 
+    def show(self):
+        self.hidden = False
+
     def destroy(self):
         self.destroyed = True
 
@@ -862,8 +907,22 @@ class TestCloseToTray(WidgetTestCase):
         with tray_state(window, object()):
             widget.JsApi().close()
         self.assertTrue(window.hidden)
+        self.assertTrue(widget.STATE.main_window_hidden)
         self.assertFalse(window.destroyed)
         self.assertFalse(widget.STATE.shutdown_event.is_set())
+
+    def test_tray_show_restores_the_tracked_window_state(self):
+        window = FakeTrayWindow()
+        window.hidden = True
+        widget.STATE.main_window = window
+        widget.STATE.main_window_hidden = True
+        with (
+            tray_state(window, object()),
+            mock.patch.object(widget, "_focus_main_window", return_value=True),
+        ):
+            widget.TRAY._on_show(None, None)
+        self.assertFalse(window.hidden)
+        self.assertFalse(widget.STATE.main_window_hidden)
 
     def test_close_falls_back_to_quitting_when_the_tray_cannot_host(self):
         """Hiding with no tray would strand the user: the window is frameless,
