@@ -120,6 +120,97 @@ class TestLocalControl(WidgetTestCase):
                 widget.dispatch_control_command("refresh"), "started")
         refresh.assert_called_once_with()
 
+    def test_usage_projection_exposes_only_compact_quota_fields(self):
+        widget.STATE.snapshot = {
+            "updated_at": 1234.5,
+            "providers": {
+                "claude": {
+                    "ok": True,
+                    "windows": [
+                        {
+                            "id": "session",
+                            "label": "session",
+                            "remaining_pct": 81.25,
+                            "resets_at": 2000,
+                            "extra": {"secret-shaped": "ignored"},
+                        },
+                        {
+                            "id": "week_opus",
+                            "label": "weekOpus",
+                            "remaining_pct": 70,
+                            "resets_at": 3000,
+                        },
+                    ],
+                    "meta": {"token": "must-not-leak"},
+                    "error": {"detail": "must-not-leak"},
+                },
+                "codex": {
+                    "ok": False,
+                    "windows": [{
+                        "id": "week",
+                        "label": "week",
+                        "remaining_pct": 42,
+                        "resets_at": None,
+                    }],
+                    "meta": {"account_id": "must-not-leak"},
+                },
+                "openrouter": {
+                    "ok": True,
+                    "meta": {"balance": {"remaining_usd": 99}},
+                },
+            },
+        }
+
+        usage = widget.control_usage_snapshot()
+
+        self.assertEqual(usage, {
+            "updated_at": 1234.5,
+            "providers": {
+                "claude": {
+                    "name": "Claude Code",
+                    "ok": True,
+                    "windows": [{
+                        "id": "session",
+                        "label": "session",
+                        "remaining_pct": 81.25,
+                        "resets_at": 2000,
+                    }],
+                },
+                "codex": {
+                    "name": "Codex CLI",
+                    "ok": False,
+                    "windows": [{
+                        "id": "week",
+                        "label": "week",
+                        "remaining_pct": 42,
+                        "resets_at": None,
+                    }],
+                },
+            },
+        })
+        self.assertNotIn("openrouter", usage["providers"])
+        self.assertEqual(widget.dispatch_control_command("usage"), "ready")
+
+    def test_usage_control_round_trip_includes_projected_snapshot(self):
+        widget.STATE.snapshot = {"updated_at": 1234, "providers": {}}
+        server = widget._WidgetControlServer(
+            (widget.CONTROL_HOST, 0), widget._WidgetControlHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            with mock.patch.object(widget, "CONTROL_PORT", port):
+                response = widget.send_control_command("usage")
+            self.assertTrue(response["ok"])
+            self.assertEqual(response["status"], "ready")
+            self.assertEqual(response["usage"]["updated_at"], 1234)
+            self.assertEqual(
+                set(response["usage"]["providers"]), {"claude", "codex"})
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_control_protocol_round_trip_is_loopback_and_allowlisted(self):
         server = widget._WidgetControlServer(
             (widget.CONTROL_HOST, 0), widget._WidgetControlHandler)

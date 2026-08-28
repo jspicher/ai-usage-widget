@@ -1006,6 +1006,43 @@ def request_refresh():
     return "started"
 
 
+def control_usage_snapshot():
+    """Return the small, secret-free quota payload exposed to local clients.
+
+    The Stream Deck display needs the same normalized numbers as the desktop
+    widget, but it must never receive credential metadata, raw API keys, error
+    details, or OpenRouter billing data. Keep this projection explicit so new
+    fields added to provider snapshots do not silently cross the loopback API.
+    """
+    with STATE.lock:
+        snapshot = copy.deepcopy(STATE.snapshot)
+
+    updated_at = snapshot.get("updated_at")
+    result = {
+        "updated_at": updated_at if isinstance(updated_at, (int, float)) else None,
+        "providers": {},
+    }
+    providers = snapshot.get("providers") or {}
+    for provider_id in ("claude", "codex"):
+        provider = providers.get(provider_id) or {}
+        windows = []
+        for window in provider.get("windows") or []:
+            if window.get("id") not in ("session", "week"):
+                continue
+            windows.append({
+                "id": window.get("id"),
+                "label": window.get("label"),
+                "remaining_pct": window.get("remaining_pct"),
+                "resets_at": window.get("resets_at"),
+            })
+        result["providers"][provider_id] = {
+            "name": PROVIDER_INFO[provider_id]["name"],
+            "ok": bool(provider.get("ok")),
+            "windows": windows,
+        }
+    return result
+
+
 def dispatch_control_command(command):
     """Execute one allowlisted local-control command."""
     if command == "show":
@@ -1016,6 +1053,8 @@ def dispatch_control_command(command):
         if not STATE.ready_event.is_set():
             return "starting"
         return request_refresh()
+    if command == "usage":
+        return "ready" if control_usage_snapshot()["updated_at"] else "starting"
     raise ValueError("unsupported control command")
 
 
@@ -1029,8 +1068,11 @@ class _WidgetControlHandler(socketserver.StreamRequestHandler):
             request = json.loads(payload.decode("utf-8"))
             if request.get("protocol") != CONTROL_PROTOCOL:
                 raise ValueError("invalid control protocol")
-            status = dispatch_control_command(request.get("command"))
+            command = request.get("command")
+            status = dispatch_control_command(command)
             response.update(ok=True, status=status)
+            if command == "usage":
+                response["usage"] = control_usage_snapshot()
         except Exception as exc:
             response["error"] = str(exc)
         self.wfile.write((json.dumps(response) + "\n").encode("utf-8"))
