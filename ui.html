@@ -539,9 +539,14 @@ function pctText(w){
   if(w.remaining_pct == null) return "—";
   return (Math.round(w.remaining_pct*10)/10).toLocaleString(LANG === "en" ? "en-US" : "ru-RU");
 }
-/* Overview windows: session + week, when available. */
-function overviewWins(p){
+/* Claude always uses the overall week, including for older snapshots. */
+function providerWins(p, id){
   const ws = p.windows || [];
+  return id === "claude" ? ws.filter(w => w.id === "week") : ws;
+}
+/* Other providers retain their available overview windows. */
+function overviewWins(p, id){
+  const ws = providerWins(p, id);
   const out = [];
   const s = ws.find(w => w.id === "session");
   if(s) out.push(s);
@@ -592,7 +597,7 @@ function renderOverview(){
     if(!p) continue;
     const isBalance = p.kind === "balance";
     const balance = isBalance ? ((p.meta && p.meta.balance) || null) : null;
-    const wins = isBalance ? [] : overviewWins(p);
+    const wins = isBalance ? [] : overviewWins(p, id);
     const w = wins[0] || null;
     // Both kinds share the header; only the headline figure differs.
     const headline = isBalance
@@ -660,7 +665,8 @@ function renderDetail(id){
     <div class="brand"><span class="glyph">${GLYPH[id]}</span><h1>${esc(p.name)}</h1>${statusHtml}</div>
     <div class="plan">${esc(p.meta && (p.meta.plan || p.meta.subscription) || t("subscription"))}</div>`;
 
-  for(const w of (p.windows || [])){
+  const wins = providerWins(p, id);
+  for(const w of wins){
     html += `<div class="win">
       <div class="head">
         <span class="label">${esc(t(w.label))}</span>
@@ -675,6 +681,9 @@ function renderDetail(id){
     html += `</div>`;
   }
 
+  if(!wins.length && !p.error){
+    html += `<div class="error">${t("noData")}</div>`;
+  }
   if(!p.ok && p.error){
     html += `<div class="error">${esc(terr(p.error))}</div>`;
     if(id === "claude" || id === "codex"){
@@ -1088,9 +1097,7 @@ setTimeout(() => {
     },
     providers: {
     claude:{id:"claude",name:"Claude Code",ok:true,meta:{subscription:"max"},windows:[
-      {id:"session",label:"session",remaining_pct:64,resets_at:Date.now()/1000+7620},
-      {id:"week",label:"week",remaining_pct:41,resets_at:Date.now()/1000+3600*52},
-      {id:"week_opus",label:"weekOpus",remaining_pct:88,resets_at:Date.now()/1000+3600*52}]},
+      {id:"week",label:"week",remaining_pct:41,resets_at:Date.now()/1000+3600*52}]},
     codex:{id:"codex",name:"Codex CLI",ok:true,meta:{plan:"plus"},windows:[
       {id:"session",label:"session",remaining_pct:73,resets_at:Date.now()/1000+4980},
       {id:"week",label:"week",remaining_pct:12,resets_at:Date.now()/1000+3600*30}]},

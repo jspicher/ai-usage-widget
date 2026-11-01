@@ -135,6 +135,13 @@ class TestLocalControl(WidgetTestCase):
                             "extra": {"secret-shaped": "ignored"},
                         },
                         {
+                            "id": "week",
+                            "label": "week",
+                            "remaining_pct": 42,
+                            "resets_at": 2500,
+                            "extra": {"secret-shaped": "ignored"},
+                        },
+                        {
                             "id": "week_opus",
                             "label": "weekOpus",
                             "remaining_pct": 70,
@@ -170,10 +177,10 @@ class TestLocalControl(WidgetTestCase):
                     "name": "Claude Code",
                     "ok": True,
                     "windows": [{
-                        "id": "session",
-                        "label": "session",
-                        "remaining_pct": 81.25,
-                        "resets_at": 2000,
+                        "id": "week",
+                        "label": "week",
+                        "remaining_pct": 42,
+                        "resets_at": 2500,
                     }],
                 },
                 "codex": {
@@ -190,6 +197,17 @@ class TestLocalControl(WidgetTestCase):
         })
         self.assertNotIn("openrouter", usage["providers"])
         self.assertEqual(widget.dispatch_control_command("usage"), "ready")
+
+    def test_claude_feed_never_substitutes_a_session_or_model_limit(self):
+        widget.STATE.snapshot = {"providers": {"claude": {
+            "ok": True,
+            "windows": [
+                {"id": "session", "remaining_pct": 80},
+                {"id": "week_opus", "remaining_pct": 90},
+            ],
+        }}}
+        self.assertEqual(
+            widget.control_usage_snapshot()["providers"]["claude"]["windows"], [])
 
     def test_usage_control_round_trip_includes_projected_snapshot(self):
         widget.STATE.snapshot = {"updated_at": 1234, "providers": {}}
@@ -507,6 +525,42 @@ class TestNormalization(unittest.TestCase):
 
 
 class TestCredentials(unittest.TestCase):
+    def fetch_claude_body(self, body):
+        with (
+            mock.patch.object(widget, "read_claude_credentials", return_value=(
+                {"token": "t", "subscription": None, "expires_at": None}, None)),
+            mock.patch.object(widget, "http_get_json", return_value=body),
+        ):
+            return widget.fetch_claude()
+
+    def test_claude_normalizes_only_overall_week_with_legacy_limits(self):
+        for used, remaining in ((0, 100), (100, 0), (90, 10), (25.25, 74.75), (None, None)):
+            with self.subTest(used=used):
+                result = self.fetch_claude_body({
+                    "seven_day": {"utilization": used, "resets_at": "2030-03-17T12:00:00Z"},
+                    **{key: {"utilization": 1, "resets_at": 1900000000}
+                       for key in ("five_hour", "seven_day_opus", "seven_day_sonnet",
+                                   "seven_day_oauth_apps")},
+                })
+                self.assertTrue(result["ok"])
+                self.assertEqual(len(result["windows"]), 1)
+                window = result["windows"][0]
+                self.assertEqual((window["id"], window["label"]), ("week", "week"))
+                self.assertEqual(window["remaining_pct"], remaining)
+                self.assertEqual(window["resets_at"], widget.iso_to_epoch("2030-03-17T12:00:00Z"))
+
+    def test_claude_missing_overall_week_is_unavailable(self):
+        for weekly in (None, {}, [], {"utilization": None}):
+            with self.subTest(weekly=weekly):
+                result = self.fetch_claude_body({
+                    "seven_day": weekly,
+                    "five_hour": {"utilization": 10},
+                    "seven_day_opus": {"utilization": 20},
+                })
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["windows"], [])
+                self.assertEqual(result["error"]["code"], "api_format_unrecognized")
+
     def test_claude_credential_reader_tries_every_candidate(self):
         with tempfile.TemporaryDirectory() as folder:
             broken = os.path.join(folder, "broken.json")

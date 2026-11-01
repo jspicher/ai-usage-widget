@@ -1,6 +1,6 @@
 # <img src="icon/512.png" alt="AI Usage Widget icon" width="48" height="48"> AI Usage Widget for Windows -- Claude Code, Codex CLI & OpenRouter Usage Tracker
 
-A free, open-source Windows desktop widget for monitoring **Claude Code**, **Codex CLI**, and **OpenRouter** usage in real time. It shows session and weekly quotas, reset countdowns, account status, and an OpenRouter dollar balance in an always-on-top window and the Windows system tray -- plus a persistent alert when a weekly quota resets.
+A free, open-source Windows desktop widget for monitoring **Claude Code**, **Codex CLI**, and **OpenRouter** usage in real time. It shows Claude's overall weekly quota, Codex's available quotas, reset countdowns, account status, and an OpenRouter dollar balance in an always-on-top window and the Windows system tray -- plus a persistent alert when a weekly quota resets.
 
 [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows)](https://github.com/jspicher/ai-usage-widget)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#license)
@@ -34,8 +34,8 @@ Use it as a:
 
 ### Screens
 
-1. **Overview** -- every connected provider at a glance: Claude's session and weekly rows, Codex's weekly row, and OpenRouter's dollar balance
-2. **Claude** -- session, weekly usage, and Opus weekly usage when available
+1. **Overview** -- every connected provider at a glance: Claude's overall weekly row, Codex's weekly row, and OpenRouter's dollar balance
+2. **Claude** -- overall weekly quota remaining and reset countdown
 3. **Codex** -- weekly usage, plan, and additional model limits. Some plans return only a weekly window and no session window; the card reflects whatever the API actually reports
 4. **OpenRouter** -- remaining credit balance, total and used, and spend for the current week
 5. **Settings** -- refresh interval, window size, language, always-on-top mode, daily weekly-bar markers, and the weekly reset alert toggle
@@ -126,7 +126,9 @@ See [Build a Windows executable](#build-a-windows-executable) below if you'd rat
 
 ## Screenshots
 
-**Claude** -- session and weekly windows, each with its own remaining percentage, reset countdown, and reset clock time.
+For local verification, run `python -m unittest discover -s tests` for desktop behavior and `node --test tests/ui.test.mjs` for overview/detail rendering, including older Claude snapshots.
+
+**Claude** -- one overall weekly window with its remaining percentage, progress bar, reset countdown, and reset clock time. Five-hour and model-specific quotas are ignored. If the overall week is unavailable, the widget shows no data rather than another limit. The local Stream Deck feed uses the same weekly window and percentage-remaining convention.
 
 ![Claude Code usage limits](preview/shot_claude.png)
 
@@ -238,7 +240,7 @@ tray, the taskbar, and Alt-Tab. If you build from a clean checkout and the feath
 
 ### What does AI Usage Widget track?
 
-It tracks available Claude Code and Codex CLI usage limits (session, weekly, reset times, account status when exposed by the service) and your OpenRouter credit balance.
+It tracks Claude Code's overall weekly quota, available Codex CLI usage limits, reset times and account status when exposed by the service, and your OpenRouter credit balance.
 
 ### Is this an API cost tracker?
 

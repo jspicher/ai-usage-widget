@@ -600,21 +600,14 @@ def fetch_claude():
             "api_format_unrecognized", params={"service": "Claude"})
         return result
 
-    label_map = {
-        "five_hour": ("session", "session"),
-        "seven_day": ("week", "week"),
-        "seven_day_sonnet": ("week_sonnet", "weekSonnet"),
-        "seven_day_opus": ("week_opus", "weekOpus"),
-        "seven_day_oauth_apps": ("week_apps", "weekApps"),
-    }
-    for key, (wid, label) in label_map.items():
-        obj = data.get(key)
-        if not isinstance(obj, dict):
-            continue
+    # Claude displays only the overall weekly quota, even when the API also
+    # returns session or model-specific limits. Never substitute those limits.
+    obj = data.get("seven_day")
+    if isinstance(obj, dict):
         pct = pick(obj, "utilization", "used_percent", "usage_percent")
         resets = iso_to_epoch(pick(obj, "resets_at", "reset_at", "resetsAt"))
         if pct is not None or resets is not None:
-            result["windows"].append(make_window(wid, label, used_pct=pct, resets_at=resets))
+            result["windows"].append(make_window("week", "week", used_pct=pct, resets_at=resets))
 
     # Extra usage / credits, when returned by the server.
     extra = data.get("extra_usage") or data.get("extraUsage")
@@ -1026,8 +1019,9 @@ def control_usage_snapshot():
     for provider_id in ("claude", "codex"):
         provider = providers.get(provider_id) or {}
         windows = []
+        allowed = ("week",) if provider_id == "claude" else ("session", "week")
         for window in provider.get("windows") or []:
-            if window.get("id") not in ("session", "week"):
+            if window.get("id") not in allowed:
                 continue
             windows.append({
                 "id": window.get("id"),
