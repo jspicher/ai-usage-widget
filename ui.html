@@ -306,6 +306,7 @@ const L10N = {
     dailyMarkers: "Дневные метки на недельных шкалах",
     credits: "Кредиты",
     spentWeek: "за неделю",
+    spentToday: "за сегодня",
     tokenStale: "⚠ токен истёк — открой CLI и залогинься",
     d: "д",
     h: "ч",
@@ -389,6 +390,7 @@ const L10N = {
     dailyMarkers: "Daily markers on weekly bars",
     credits: "Credits",
     spentWeek: "this week",
+    spentToday: "today",
     tokenStale: "⚠ token expired — open CLI and login",
     d: "d",
     h: "h",
@@ -614,6 +616,12 @@ function renderOverview(){
           <span>${t("credits")} · ${t("remaining")}</span>
           <span>${balance.week_usd != null ? usd(balance.week_usd) + " " + t("spentWeek") : ""}</span>
         </div>`;
+      if(balance.day_usd != null){
+        html += `<div class="sub">
+            <span></span>
+            <span>${usd(balance.day_usd)} ${t("spentToday")}</span>
+          </div>`;
+      }
     } else if(wins.length){
       for(const win of wins){
         html += `<div class="sub">
@@ -649,6 +657,7 @@ function renderDetail(id){
           </div>
           <div class="usd">${usd(b.used_usd)}${t("of")}${usd(b.total_usd)}</div>
           ${b.week_usd != null ? `<div class="usd">${usd(b.week_usd)} ${t("spentWeek")}</div>` : ""}
+          ${b.day_usd != null ? `<div class="usd">${usd(b.day_usd)} ${t("spentToday")}</div>` : ""}
         </div>` : `<div class="error">${esc(terr(p.error) || t("noData"))}</div>`}
     </div>`;
     return;
@@ -1102,7 +1111,7 @@ setTimeout(() => {
       {id:"session",label:"session",remaining_pct:73,resets_at:Date.now()/1000+4980},
       {id:"week",label:"week",remaining_pct:12,resets_at:Date.now()/1000+3600*30}]},
     openrouter:{id:"openrouter",name:"OpenRouter",kind:"balance",ok:true,
-      meta:{key_source:"env",balance:{remaining_usd:18.75,total_usd:30,used_usd:11.25,week_usd:2.5}},
+      meta:{key_source:"env",balance:{remaining_usd:18.75,total_usd:30,used_usd:11.25,week_usd:2.5,day_usd:0.4}},
       windows:[]}
   }};
   const failDemoSaves = demoParams.get("save") === "fail";

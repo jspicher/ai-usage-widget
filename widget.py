@@ -818,17 +818,20 @@ def fetch_openrouter():
         "total_usd": round(total, 2),
         "used_usd": round(used, 2),
         "week_usd": None,
+        "day_usd": None,
     }
-    # Weekly usage is optional; a failure here must not break the card.
+    # Weekly and daily usage are optional; a failure here must not break the card.
     # Do not collect the key label or mask: the UI does not show them, and
     # key-derived data does not need to travel through snapshots or the WebView.
     try:
         key_data = (http_get_json(OPENROUTER_KEY_URL, headers) or {}).get("data") or {}
-        weekly = key_data.get("usage_weekly")
-        if weekly is not None:
-            balance["week_usd"] = round(float(weekly), 2)
     except Exception:
-        pass
+        key_data = {}
+    for field, target in (("usage_weekly", "week_usd"), ("usage_daily", "day_usd")):
+        try:
+            balance[target] = round(float(key_data[field]), 2)
+        except (KeyError, TypeError, ValueError):
+            pass
 
     result["meta"]["balance"] = balance
     result["ok"] = True

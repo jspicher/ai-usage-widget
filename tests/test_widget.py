@@ -781,6 +781,37 @@ class TestProviderPayloads(unittest.TestCase):
         self.assertEqual(
             error, {"code": "codex_auth_expired", "params": {"status": 401}})
 
+    def _fetch_openrouter_with_key_data(self, key_data):
+        credits = {"data": {"total_credits": 30, "total_usage": 11.25}}
+
+        def fake_get(url, _headers):
+            return credits if url == widget.OPENROUTER_CREDITS_URL else {"data": key_data}
+
+        with (
+            mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "k"}),
+            mock.patch.object(widget, "http_get_json", side_effect=fake_get),
+        ):
+            return widget.fetch_openrouter()
+
+    def test_openrouter_reads_weekly_and_daily_spend(self):
+        result = self._fetch_openrouter_with_key_data(
+            {"usage_weekly": 2.504, "usage_daily": 0.396})
+        balance = result["meta"]["balance"]
+        self.assertTrue(result["ok"])
+        self.assertEqual(balance["week_usd"], 2.5)
+        self.assertEqual(balance["day_usd"], 0.4)
+
+    def test_openrouter_bad_daily_spend_keeps_weekly(self):
+        """A missing or junk daily figure must not drop the weekly one."""
+        for daily in ({}, {"usage_daily": None}, {"usage_daily": "n/a"}):
+            with self.subTest(daily=daily):
+                result = self._fetch_openrouter_with_key_data(
+                    {"usage_weekly": 2.5, **daily})
+                balance = result["meta"]["balance"]
+                self.assertTrue(result["ok"])
+                self.assertEqual(balance["week_usd"], 2.5)
+                self.assertIsNone(balance["day_usd"])
+
     def test_resolve_resets_flags_only_derived_timestamps(self):
         absolute, derived = widget._resolve_resets({"resets_at": 1_790_000_000})
         self.assertEqual(absolute, 1_790_000_000)
