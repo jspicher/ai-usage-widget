@@ -1144,12 +1144,17 @@ class WidgetControlChannel:
             # control-port bind remains a second line of duplicate protection.
             return True
 
-    def start_or_notify_existing(self):
+    def start_or_notify_existing(self, command="show"):
+        """Become the primary instance, or send `command` to the running one.
+
+        `command` is "show" for a normal launch, or "toggle" for a hotkey
+        launch (`--toggle`) that should hide a visible widget.
+        """
         if not self._acquire_primary_instance():
-            if send_control_command("show", wait_seconds=3.0) is None:
+            if send_control_command(command, wait_seconds=3.0) is None:
                 _log_failure(
                     "existing-instance notification",
-                    RuntimeError("primary instance did not accept show"),
+                    RuntimeError(f"primary instance did not accept {command}"),
                 )
             return False
         try:
@@ -1159,7 +1164,7 @@ class WidgetControlChannel:
             # The mutex is the primary guard, but a protocol-compatible server
             # already owning the port is also definitive evidence of the
             # primary instance (for example, if mutex creation was denied).
-            if send_control_command("show", wait_seconds=0.5) is not None:
+            if send_control_command(command, wait_seconds=0.5) is not None:
                 self._close_mutex()
                 return False
             _log_failure("control server start", exc)
@@ -2031,7 +2036,8 @@ class JsApi:
 
 def main():
     global webview
-    if not CONTROL.start_or_notify_existing():
+    command = "toggle" if "--toggle" in sys.argv[1:] else "show"
+    if not CONTROL.start_or_notify_existing(command):
         return
     try:
         import webview  # pywebview

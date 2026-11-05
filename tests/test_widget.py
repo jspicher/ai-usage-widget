@@ -270,6 +270,24 @@ class TestLocalControl(WidgetTestCase):
         send.assert_called_once_with("show", wait_seconds=3.0)
         self.assertIsNone(channel.server)
 
+    def test_secondary_toggle_launch_sends_toggle(self):
+        channel = widget.WidgetControlChannel()
+        response = {
+            "protocol": widget.CONTROL_PROTOCOL,
+            "ok": True,
+            "status": "minimized",
+        }
+        with (
+            mock.patch.object(
+                channel, "_acquire_primary_instance", return_value=False),
+            mock.patch.object(
+                widget, "send_control_command", return_value=response
+            ) as send,
+        ):
+            self.assertFalse(channel.start_or_notify_existing("toggle"))
+        send.assert_called_once_with("toggle", wait_seconds=3.0)
+        self.assertIsNone(channel.server)
+
     def test_manual_refresh_reports_busy_without_spawning(self):
         widget.STATE.refresh_lock.acquire()
         try:
