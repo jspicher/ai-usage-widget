@@ -25,6 +25,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -695,6 +696,85 @@ def _resolve_resets(obj):
         return None, False
 
 
+CODEX_SESSION_MAX_AGE = 300
+CODEX_SESSION_TAIL_BYTES = 512 * 1024
+
+
+def read_codex_session_limits(account_id, now=None):
+    """Read recent CLI quota events, bound to the authenticated account.
+
+    The usage endpoint can return 404 even for the official CLI. Session events
+    carry the quota supplied by inference responses; never substitute token
+    counts or another account's readings. Bound both file count and read size.
+    """
+    if not account_id:
+        return None
+    now = time.time() if now is None else now
+    candidates = []
+    try:
+        for path in Path(_codex_home(), "sessions").rglob("*.jsonl"):
+            try:
+                modified = path.stat().st_mtime
+                # Windows may defer mtime updates while Codex holds a log open.
+                # Event timestamps below, not mtime, enforce the five-minute cap.
+                if modified >= now - 86400:
+                    candidates.append((modified, path))
+            except OSError:
+                continue
+    except OSError:
+        return None
+    latest = None
+    for _, path in sorted(candidates, reverse=True)[:24]:
+        try:
+            with path.open("rb") as stream:
+                first = json.loads(stream.readline(256 * 1024))
+                owner = first.get("payload") or {}
+                if (first.get("type") != "session_meta"
+                        or owner.get("creator_account_id") != account_id
+                        or owner.get("model_provider") != "openai"):
+                    continue
+                stream.seek(0, os.SEEK_END)
+                stream.seek(max(0, stream.tell() - CODEX_SESSION_TAIL_BYTES))
+                lines = stream.read(CODEX_SESSION_TAIL_BYTES).splitlines()
+            for line in reversed(lines):
+                if b'"token_count"' not in line:
+                    continue
+                try:
+                    event = json.loads(line)
+                    payload = event.get("payload") or {}
+                    limits = payload.get("rate_limits")
+                    observed = iso_to_epoch(event.get("timestamp"))
+                    if (event.get("type") != "event_msg"
+                            or payload.get("type") != "token_count"
+                            or not isinstance(limits, dict)
+                            or limits.get("limit_id") != "codex"
+                            or observed is None or not math.isfinite(observed)
+                            or not 0 <= now - observed <= CODEX_SESSION_MAX_AGE):
+                        continue
+                    clean = {"plan_type": limits.get("plan_type"),
+                             "credits": limits.get("credits")}
+                    for key in ("primary", "secondary"):
+                        w = limits.get(key)
+                        if not isinstance(w, dict):
+                            continue
+                        pct, reset, minutes = (w.get(k) for k in (
+                            "used_percent", "resets_at", "window_minutes"))
+                        if (all(type(v) in (int, float) and math.isfinite(v)
+                                for v in (pct, reset, minutes))
+                                and 0 <= pct <= 100 and reset > now and minutes > 0):
+                            clean[key] = {"used_percent": pct, "resets_at": reset,
+                                          "window_minutes": minutes}
+                    if not any(k in clean for k in ("primary", "secondary")):
+                        continue
+                    if latest is None or observed > latest[1]:
+                        latest = (clean, observed)
+                except (ValueError, TypeError, AttributeError):
+                    continue
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return latest
+
+
 def fetch_codex():
     result = provider_result("codex")
     credentials, credential_error = read_codex_credentials()
@@ -714,6 +794,14 @@ def fetch_codex():
     data, request_error = request_provider_json(
         "https://chatgpt.com/backend-api/wham/usage", headers,
         "Codex", "codex_auth_expired")
+    if (request_error and request_error.get("code") == "api_http_error"
+            and request_error.get("params", {}).get("status") == 404):
+        fallback = read_codex_session_limits(account_id)
+        if fallback:
+            limits, observed = fallback
+            data = {"rate_limit": limits, "plan_type": limits.get("plan_type"),
+                    "credits": limits.get("credits")}
+            result["meta"].update(usage_source="codex_session", observed_at=observed)
     if not isinstance(data, dict):
         result["error"] = request_error or error_info(
             "api_format_unrecognized", params={"service": "Codex"})
@@ -1037,6 +1125,10 @@ def control_usage_snapshot():
             "ok": bool(provider.get("ok")),
             "windows": windows,
         }
+        meta = provider.get("meta") or {}
+        if meta.get("usage_source") == "codex_session":
+            result["providers"][provider_id].update(
+                usage_source="codex_session", observed_at=meta.get("observed_at"))
     return result
 
 

@@ -162,6 +162,16 @@ You must already be logged in through each CLI using `/login`, `claude auth logi
 
 The Claude and Codex usage endpoints are undocumented and may change. If a card stops updating after a CLI update, open an issue with the error details. OpenRouter's `/credits` and `/key` endpoints are part of its public API and are expected to remain stable.
 
+If the Codex usage endpoint returns HTTP 404, the widget can use quota readings
+from local Codex CLI session records under `CODEX_HOME/sessions` (normally
+`~/.codex/sessions`). These are the rate limits reported by Codex, not estimates
+from token counts. Only readings for the signed-in account, from the OpenAI
+provider, under five minutes old and with an unexpired quota window are accepted.
+The overview and Codex detail label this source and show the reading's time.
+If Codex is idle long enough for that reading to expire, the error returns until
+Codex supplies a fresh reading or the usage endpoint recovers. The loopback feed
+also includes `usage_source` and `observed_at` for fallback readings.
+
 ## Settings
 
 The Settings screen supports:

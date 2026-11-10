@@ -717,6 +717,120 @@ class TestPolling(WidgetTestCase):
         self.assertEqual(error, {"code": "internal_error"})
 
 
+class TestCodexSessionFallback(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.home_patch = mock.patch.object(widget, "_codex_home", return_value=self.folder.name)
+        self.home_patch.start()
+        self.addCleanup(self.home_patch.stop)
+        self.now = time.time()
+
+    def write_session(self, name="current", account="current-account", age=10,
+                      limit_id="codex", reset_offset=1000, used=21, provider="openai"):
+        from pathlib import Path
+        folder = Path(self.folder.name, "sessions", "2026", "11", "10")
+        folder.mkdir(parents=True, exist_ok=True)
+        limits = {"limit_id": limit_id, "plan_type": "pro", "primary": {
+            "used_percent": used, "window_minutes": 10080,
+            "resets_at": self.now + reset_offset}, "secondary": None}
+        records = [
+            {"type": "session_meta", "payload": {
+                "creator_account_id": account, "model_provider": provider}},
+            {"type": "event_msg", "timestamp": self.now - age, "payload": {
+                "type": "token_count", "rate_limits": limits}},
+        ]
+        path = folder / (name + ".jsonl")
+        # Truncated writes and unrelated text must not prevent reading an event.
+        path.write_text("\n".join(json.dumps(r) for r in records) + '\n{"partial', encoding="utf-8")
+        return path
+
+    def fetch(self, status=404):
+        error = widget.error_info("codex_auth_expired" if status == 401 else "api_http_error",
+                                  params={"service": "Codex", "status": status})
+        with (
+            mock.patch.object(widget, "read_codex_credentials", return_value=({
+                "token": "secret", "account_id": "current-account", "expires_at": self.now + 1000}, None)),
+            mock.patch.object(widget, "request_provider_json", return_value=(None, error)),
+        ):
+            return widget.fetch_codex()
+
+    def test_404_uses_account_bound_recent_cli_weekly_reading(self):
+        self.write_session()
+        result = self.fetch()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["windows"][0]["id"], "week")
+        self.assertEqual(result["windows"][0]["remaining_pct"], 79)
+        self.assertEqual(result["meta"]["usage_source"], "codex_session")
+        self.assertEqual(result["meta"]["observed_at"], self.now - 10)
+        self.assertIsNone(result["error"])
+        self.assertNotIn("secret", json.dumps(result))
+
+    def test_missing_other_account_and_unknown_owner_are_rejected(self):
+        self.assertFalse(self.fetch()["ok"])
+        for account in ("other-account", None):
+            self.write_session(account=account)
+            self.assertIsNone(widget.read_codex_session_limits("current-account", self.now))
+        self.assertIsNone(widget.read_codex_session_limits(None, self.now))
+
+    def test_stale_future_expired_wrong_model_and_invalid_readings_are_rejected(self):
+        for changes in ({"age": 301}, {"age": -10}, {"reset_offset": -1},
+                        {"limit_id": "spark"}, {"used": "invalid"},
+                        {"used": float("nan")}, {"provider": "other"}):
+            with self.subTest(changes=changes):
+                self.write_session(**changes)
+                self.assertIsNone(widget.read_codex_session_limits("current-account", self.now))
+
+    def test_newest_event_wins_over_file_modification_order(self):
+        path = self.write_session(name="fresh", age=5, used=22)
+        # Windows can retain an older mtime while a CLI has the file open.
+        os.utime(path, (self.now - 3600, self.now - 3600))
+        self.write_session(name="older", age=100, used=20)
+        limits, observed = widget.read_codex_session_limits("current-account", self.now)
+        self.assertEqual(limits["primary"]["used_percent"], 22)
+        self.assertEqual(observed, self.now - 5)
+
+    def test_auth_failure_does_not_use_local_quota(self):
+        self.write_session()
+        result = self.fetch(status=401)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "codex_auth_expired")
+
+    def test_tail_scan_ignores_large_tool_output_and_partial_lines(self):
+        path = self.write_session()
+        lines = path.read_text(encoding="utf-8").splitlines()
+        path.write_text(lines[0] + "\n" + json.dumps({"output": "x" * 600_000})
+                        + "\n" + "\n".join(lines[1:]), encoding="utf-8")
+        self.assertIsNotNone(widget.read_codex_session_limits("current-account", self.now))
+
+    def test_loopback_feed_includes_source_and_time_without_credential_metadata(self):
+        self.write_session()
+        state = widget.State()
+        state.snapshot = {"updated_at": self.now, "providers": {"codex": self.fetch()}}
+        with mock.patch.object(widget, "STATE", state):
+            snapshot = widget.control_usage_snapshot()
+        codex = snapshot["providers"]["codex"]
+        self.assertEqual(codex["usage_source"], "codex_session")
+        self.assertEqual(codex["observed_at"], self.now - 10)
+        self.assertNotIn("token_expires_at", json.dumps(snapshot))
+        self.assertEqual(codex["windows"][0]["remaining_pct"], 79)
+
+    def test_successful_endpoint_takes_precedence(self):
+        self.write_session()
+        with (
+            mock.patch.object(widget, "read_codex_credentials", return_value=({
+                "token": "secret", "account_id": "current-account"}, None)),
+            mock.patch.object(widget, "request_provider_json", return_value=({
+                "rate_limit": {"primary_window": {"used_percent": 30, "window_minutes": 10080}}}, None)),
+            mock.patch.object(widget, "read_codex_session_limits") as fallback,
+        ):
+            result = widget.fetch_codex()
+        fallback.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["windows"][0]["remaining_pct"], 70)
+        self.assertNotIn("usage_source", result["meta"])
+
+
 class TestProviderPayloads(unittest.TestCase):
     def test_every_provider_result_carries_a_name_and_kind(self):
         for provider_id in widget.PROVIDER_INFO:

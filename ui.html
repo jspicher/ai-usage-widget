@@ -268,6 +268,7 @@ const L10N = {
   ru: {
     loading: "Загрузка…",
     updated: "обновлено",
+    codexSessionSource: "Из Codex CLI (API недоступен) · {time}",
     overview: "Обзор",
     settings: "Настройки",
     session: "Сессия (5 ч)",
@@ -352,6 +353,7 @@ const L10N = {
   en: {
     loading: "Loading…",
     updated: "updated",
+    codexSessionSource: "From Codex CLI (API unavailable) · {time}",
     overview: "Overview",
     settings: "Settings",
     session: "Session (5h)",
@@ -633,6 +635,9 @@ function renderOverview(){
     } else {
       html += `<div class="err">${esc(terr(p.error) || t("noData"))}</div>`;
     }
+    if(p.meta?.usage_source === "codex_session"){
+      html += `<div class="sub">${esc(t("codexSessionSource").replace("{time}", fmtClock(p.meta.observed_at)))}</div>`;
+    }
     html += `</button>`;
   }
   el.innerHTML = html;
@@ -702,6 +707,7 @@ function renderDetail(id){
 
   const metaBits = [];
   if(p.meta){
+    if(p.meta.usage_source === "codex_session") metaBits.push(t("codexSessionSource").replace("{time}", fmtClock(p.meta.observed_at)));
     if(p.meta.credits != null) metaBits.push(t("credits") + ": " + p.meta.credits);
     if(p.meta.token_stale) metaBits.push(t("tokenStale"));
   }
