@@ -19,7 +19,9 @@ If checkOnly Then
 End If
 Set sh = CreateObject("WScript.Shell")
 sh.CurrentDirectory = dir
-' /toggle (used by the F15 hotkey shortcut) hides the widget if it is showing.
+' /toggle hides the widget if it is showing, for any launcher that wants a
+' show/hide switch. F15 no longer goes through here: the running widget
+' registers it as a global hotkey itself (see GlobalHotkey in widget.py).
 extra = ""
 If WScript.Arguments.Named.Exists("toggle") Then extra = " --toggle"
 sh.Run """" & pythonw & """ """ & fso.BuildPath(dir, "widget.py") & """" & extra, 0, False

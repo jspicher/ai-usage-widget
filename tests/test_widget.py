@@ -288,6 +288,34 @@ class TestLocalControl(WidgetTestCase):
         send.assert_called_once_with("toggle", wait_seconds=3.0)
         self.assertIsNone(channel.server)
 
+    def test_global_hotkey_defaults_to_toggling_the_main_window(self):
+        hotkey = widget.GlobalHotkey()
+        self.assertIs(hotkey.callback, widget.toggle_main_window)
+        self.assertEqual(hotkey.vk, 0x7E)
+
+    def test_global_hotkey_is_unavailable_off_windows(self):
+        hotkey = widget.GlobalHotkey(callback=mock.Mock())
+        with mock.patch.object(widget.os, "name", "posix"):
+            self.assertFalse(hotkey.start())
+        self.assertIsNone(hotkey.thread)
+
+    @unittest.skipUnless(os.name == "nt", "RegisterHotKey is Windows only")
+    def test_global_hotkey_runs_callback_in_process_and_stops(self):
+        import ctypes
+        fired = threading.Event()
+        # F24 is a key nothing maps, so registering it cannot clash with F15.
+        hotkey = widget.GlobalHotkey(vk=0x87, callback=fired.set)
+        self.assertTrue(hotkey.start())
+        try:
+            ctypes.windll.user32.PostThreadMessageW(
+                hotkey.thread_id, widget.WM_HOTKEY, widget.GLOBAL_HOTKEY_ID, 0)
+            self.assertTrue(fired.wait(timeout=2))
+        finally:
+            thread = hotkey.thread
+            hotkey.stop()
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(hotkey.active)
+
     def test_manual_refresh_reports_busy_without_spawning(self):
         widget.STATE.refresh_lock.acquire()
         try:

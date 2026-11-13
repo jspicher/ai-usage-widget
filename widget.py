@@ -69,6 +69,16 @@ CONTROL_PORT = 47653
 CONTROL_PROTOCOL = "ai-usage-widget/1"
 CONTROL_MESSAGE_LIMIT = 1024
 SINGLE_INSTANCE_MUTEX_NAME = r"Local\AIUsageWidget.SingleInstance"
+# F15 toggles the widget from inside the running process. Windows delivers a
+# registered hotkey straight to this process, so there is no shortcut dispatch,
+# wscript, or Python cold start between the key press and the toggle. Do not
+# also give a Start Menu shortcut the F15 hotkey: Explorer would own the key and
+# RegisterHotKey here would fail.
+GLOBAL_HOTKEY_VK = 0x7E  # VK_F15
+GLOBAL_HOTKEY_ID = 0x4155
+WM_HOTKEY = 0x0312
+WM_QUIT = 0x0012
+MOD_NOREPEAT = 0x4000
 # A jump of less than one point is not a reset. resetwatch reports a reset when
 # remaining_pct rises by at least this much, so a hand-edited 0 (or a negative
 # value, which clamps) would fire on every poll where the balance merely failed
@@ -1294,6 +1304,79 @@ class WidgetControlChannel:
 
 CONTROL = WidgetControlChannel()
 
+
+class GlobalHotkey:
+    """Toggle the main window when the global hotkey (F15) is pressed.
+
+    RegisterHotKey is bound to the thread that calls it and its WM_HOTKEY
+    messages arrive on that thread's queue, so this owns a dedicated thread
+    that registers the key and pumps messages until stop() posts WM_QUIT.
+    """
+
+    def __init__(self, vk=GLOBAL_HOTKEY_VK, callback=None):
+        self.vk = vk
+        self.callback = callback or toggle_main_window
+        self.thread = None
+        self.thread_id = None
+        self.active = False
+        self._attempted = threading.Event()
+
+    def start(self):
+        """Register the hotkey; return False if it is unavailable."""
+        if os.name != "nt":
+            return False
+        self.thread = threading.Thread(
+            target=self._run, name="widget-hotkey", daemon=True)
+        self.thread.start()
+        self._attempted.wait(timeout=2)
+        return self.active
+
+    def _run(self):
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        self.thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
+        try:
+            if not user32.RegisterHotKey(
+                    None, GLOBAL_HOTKEY_ID, MOD_NOREPEAT, self.vk):
+                raise ctypes.WinError()
+            self.active = True
+        except Exception as exc:
+            # Another program may already own the key. The widget still works
+            # through its tray icon, Stream Deck, and launch shortcuts.
+            _log_failure("global hotkey registration", exc)
+            return
+        finally:
+            self._attempted.set()
+        msg = wintypes.MSG()
+        try:
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == WM_HOTKEY and msg.wParam == GLOBAL_HOTKEY_ID:
+                    try:
+                        self.callback()
+                    except Exception as exc:
+                        _log_failure("global hotkey toggle", exc)
+        finally:
+            user32.UnregisterHotKey(None, GLOBAL_HOTKEY_ID)
+            self.active = False
+
+    def stop(self):
+        if self.thread is None:
+            return
+        if self.active and self.thread_id and os.name == "nt":
+            try:
+                import ctypes
+                ctypes.windll.user32.PostThreadMessageW(
+                    self.thread_id, WM_QUIT, 0, 0)
+            except Exception:
+                pass
+        self.thread.join(timeout=2)
+        self.thread = None
+
+
+HOTKEY = GlobalHotkey()
+
 # Use DATA_DIR, not APP_DIR: alert state must survive process exit even in a
 # one-file build; see the comment where DATA_DIR is defined.
 ALERT_STATE_PATH = os.path.join(DATA_DIR, "reset-alert-state.json")
@@ -2204,6 +2287,7 @@ def main():
     if TRAY_AVAILABLE:
         TRAY.start(window)
     STATE.ready_event.set()
+    HOTKEY.start()
     # Start the polling thread only NOW, after the main window exists. Otherwise
     # the first process_reset_alerts() could call raise_alert() before the main
     # window is created, making webview.windows[0] the alert window. JsApi.close,
@@ -2215,6 +2299,7 @@ def main():
         STATE.shutdown_event.set()
         STATE.refresh_wake_event.set()
         STATE.ready_event.clear()
+        HOTKEY.stop()
         TRAY.stop()
         CONTROL.stop()
 
