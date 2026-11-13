@@ -1,6 +1,6 @@
 # <img src="icon/512.png" alt="AI Usage Widget icon" width="48" height="48"> AI Usage Widget for Windows -- Claude Code, Codex CLI & OpenRouter Usage Tracker
 
-A free, open-source Windows desktop widget for monitoring **Claude Code**, **Codex CLI**, and **OpenRouter** usage in real time. It shows Claude's overall weekly quota, Codex's available quotas, reset countdowns, account status, and an OpenRouter dollar balance in an always-on-top window and the Windows system tray -- plus a persistent alert when a weekly quota resets.
+A free, open-source Windows desktop widget for monitoring **Claude Code**, **Codex CLI**, and **OpenRouter** usage in real time. It shows Claude's overall weekly quota, Codex's available quotas, banked reset counts, reset countdowns, account status, and an OpenRouter dollar balance in an always-on-top window and the Windows system tray. Persistent alerts report weekly quota resets and remind you before unused banked resets expire.
 
 [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows)](https://github.com/jspicher/ai-usage-widget)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#license)
@@ -31,6 +31,7 @@ Use it as a:
 - OpenRouter credit balance in dollars, since it isn't a time-windowed quota
 - Plan and account status
 - Additional model limits when available
+- Available Claude and Codex banked resets, with reset types and local expiration dates on the detail pages
 
 ### Screens
 
@@ -38,7 +39,7 @@ Use it as a:
 2. **Claude** -- overall weekly quota remaining and reset countdown
 3. **Codex** -- weekly usage, plan, and additional model limits. Some plans return only a weekly window and no session window; the card reflects whatever the API actually reports
 4. **OpenRouter** -- remaining credit balance, total and used, and spend for the current week
-5. **Settings** -- refresh interval, window size, language, always-on-top mode, daily weekly-bar markers, and the weekly reset alert toggle
+5. **Settings** -- refresh interval, window size, language, always-on-top mode, daily weekly-bar markers, and the **Reset and expiry alerts** toggle
 
 ### Status indicators
 
@@ -62,6 +63,42 @@ The widget watches each provider's weekly window and raises a dedicated alert wi
 - Detection compares two `resets_at` timestamps to each other, never against the wall clock -- so changing your system clock cannot fabricate an alert. A reset is flagged when the weekly window's reset timestamp advances by more than an hour, or when the remaining percentage jumps by 10 or more points.
 - Resets are tracked across restarts in both directions: if a reset happened while the app was closed, it's reported and tagged "while you were away"; an alert you haven't dismissed yet reappears the next time the app starts.
 - Configurable in `config.json` under a `reset_alert` block (`enabled`, `pct_jump_threshold`, `resets_at_advance_sec`), with a toggle in Settings.
+
+### Banked resets and expiration reminders
+
+Claude and Codex overview cards show the available banked reset count. Their
+detail pages group resets by type and expiration, shown in your local time.
+Claude weekly and Fable resets remain separate. Unavailable data is labeled
+explicitly; a missing response never becomes a zero count. Codex's reported
+total takes precedence over a potentially incomplete grant list.
+
+During normal refreshes, fresh active grant data triggers a reminder when an
+unused reset enters the **10-hour** or **1-hour** window before expiration.
+The existing alert window stays visible until dismissed, accompanied by a
+Windows toast. Grants with the same provider, coverage, and expiry share a row.
+
+- Dismissing a 10-hour reminder still allows the 1-hour reminder. If the first
+  row is still visible, it updates in place and a new toast announces the final hour.
+- Each grant's delivered thresholds are saved separately from pending rows in
+  the atomic `reset-alert-state.json` file, so dismissal and restart do not repeat them.
+- A fresh read before the final-hour reminder must still confirm the grant is
+  available. Consumed, paused, unsupported, or expired grants cannot trigger it.
+  Count-only data, stale observations, and missing expiration dates cannot trigger reminders.
+- On startup or resume, a successful read shows the currently relevant stage.
+  If less than an hour remains, only the 1-hour reminder appears. Expired grants
+  never generate a new reminder. Existing rows update to show expiration or
+  confirmed unavailability and remain until dismissed.
+- **Settings > Reset and expiry alerts** controls both expiry reminders and
+  weekly reset notices. Both notification types support English and Russian.
+
+Claude reset collection detects the installed CLI version once per launch with
+a hidden, three-second timeout and requests `cedar_ember` grants using the CLI
+headers. If detection or the optional request fails, normal quota collection
+continues. Codex reads the dedicated
+`chatgpt.com/backend-api/wham/rate-limit-reset-credits` endpoint with its existing
+credentials, independently of the quota endpoint and session fallback. These
+are read-only observations: the widget has no reset redemption or purchase controls.
+The Stream Deck plugin and its local feed are unchanged.
 
 ### Windows system tray
 
@@ -126,7 +163,7 @@ See [Build a Windows executable](#build-a-windows-executable) below if you'd rat
 
 ## Screenshots
 
-For local verification, run `python -m unittest discover -s tests` for desktop behavior and `node --test tests/ui.test.mjs` for overview/detail rendering, including older Claude snapshots.
+For local verification, run `python -m unittest discover -s tests` for desktop behavior and `node --test tests/*.test.mjs` for overview, detail, and alert rendering, including older snapshots and both languages.
 
 **Claude** -- one overall weekly window with its remaining percentage, progress bar, reset countdown, and reset clock time. Five-hour and model-specific quotas are ignored. If the overall week is unavailable, the widget shows no data rather than another limit. The local Stream Deck feed uses the same weekly window and percentage-remaining convention.
 
@@ -140,7 +177,7 @@ For local verification, run `python -m unittest discover -s tests` for desktop b
 
 ![OpenRouter credit balance](preview/shot_openrouter.png)
 
-**Settings** -- refresh interval, language, window size, the daily marker and weekly reset alert toggles, and read-only connector status.
+**Settings** -- refresh interval, language, window size, the daily marker and reset/expiry alert toggles, and read-only connector status.
 
 ![Widget settings](preview/shot_settings.png)
 
@@ -180,7 +217,7 @@ The Settings screen supports:
 - Window width and height, side by side (200-800 px wide, 300-1200 px tall)
 - Always-on-top mode
 - Daily markers and current-cycle-day dots on weekly bars (enabled by default)
-- Weekly reset alert on/off
+- Reset and expiry alerts on/off
 - Read-only connector status for each provider (connected / not configured, and where the credential came from)
 - Russian and English interface languages
 - A visible scrollbar on this page only, since it's the one screen with more content than fits at the default window size
@@ -284,6 +321,7 @@ The pinned set lives in `requirements.txt` and is installed into `.venv`.
 usage-widget/
 ├── widget.py
 ├── resetwatch.py
+├── resetgrants.py
 ├── ui.html
 ├── alert.html
 ├── requirements.txt
@@ -300,10 +338,15 @@ usage-widget/
 
 ```bash
 python -m unittest discover -s tests -t . -v
+node --test tests/*.test.mjs
 ```
 
 Runs the reset-detection suite plus widget regression coverage for configuration
 recovery, credential parsing, timestamps, polling, redaction, and CLI launching.
+Fixture grants and simulated time cover both expiry thresholds, partial and
+complete consumption, capped grant lists, dismissal, restart persistence,
+grouping, and late startup without consuming a real reset. UI tests exercise
+overview counts, grouped expiration details, and persistent alert wording.
 
 ### Build a Windows executable
 

@@ -18,9 +18,22 @@ import json
 import os
 import tempfile
 
+import resetgrants
+
 WEEK_WINDOW_ID = "week"
 DEFAULT_PCT_JUMP = 10.0
 DEFAULT_RESETS_ADVANCE_SEC = 3600
+GRANT_MAX_AGE_SEC = 120
+
+
+def grant_key(provider, grant):
+    """Delivery identity includes expiry, so an extended grant is a new offer."""
+    return "%s|%s|%.6f" % (provider, grant["id"], grant["expires_at"])
+
+
+def expiry_group_id(provider, coverage, expires_at):
+    raw = "%s|%s|%.6f" % (provider, coverage, expires_at)
+    return "expiry-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
 
 
 def atomic_write_json(path, payload):
@@ -143,6 +156,7 @@ def detect_resets(prev_readings, next_readings, cfg=None, while_away=False, now=
         if not (boundary_moved or balance_jumped):
             continue
         events.append({
+            "kind": "weekly_reset",
             "id": event_id(pid, new["resets_at"], new["remaining_pct"]),
             "provider": pid,
             "from_pct": old["remaining_pct"],
@@ -168,6 +182,7 @@ class AlertStore:
             os.path.dirname(os.path.abspath(path)) or ".", "widget-error.log")
         self.seen = {}
         self.pending = []
+        self.delivered = {}
         # False after a failed save(). The app runs under pythonw without a
         # console, so this UI-visible flag and the log file are the only ways
         # to learn about a write failure.
@@ -189,10 +204,32 @@ class AlertStore:
             # Drop entries the rest of the module could not use; see
             # stored_readings.
             self.seen = stored_readings(seen if isinstance(seen, dict) else {})
-            self.pending = [e for e in pending if isinstance(e, dict)]
+            self.pending = []
+            for entry in pending:
+                if not isinstance(entry, dict):
+                    continue
+                row = dict(entry, kind=entry.get("kind", "weekly_reset"))
+                if row["kind"] == "reset_expiry":
+                    if (not isinstance(row.get("id"), str)
+                            or not isinstance(row.get("provider"), str)
+                            or resetgrants.epoch(row.get("expires_at")) is None
+                            or row.get("threshold_hours") not in (10, 1)
+                            or not isinstance(row.get("grants"), list)):
+                        continue
+                    row["grants"] = [m for m in row["grants"] if isinstance(m, dict)
+                                     and isinstance(m.get("key"), str)
+                                     and resetgrants.count(m.get("remaining_count")) is not None]
+                    if not row["grants"]:
+                        continue
+                self.pending.append(row)
+            delivered = data.get("delivered")
+            self.delivered = {key: [h for h in hours if type(h) is int and h in (10, 1)]
+                              for key, hours in (delivered.items() if isinstance(delivered, dict) else [])
+                              if isinstance(key, str) and isinstance(hours, list)}
         except Exception:
             self.seen = {}
             self.pending = []
+            self.delivered = {}
         return self
 
     def _log_failure(self, exc):
@@ -217,7 +254,8 @@ class AlertStore:
         restarts is lost. Therefore the result is returned, logged, and shown
         in settings.
         """
-        payload = {"seen": self.seen, "pending": self.pending}
+        payload = {"seen": self.seen, "pending": self.pending,
+                   "delivered": self.delivered}
         # sort_keys so an unchanged payload always compares equal.
         fingerprint = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         # Skip the write only if the file that write produced is still there.
@@ -246,6 +284,105 @@ class AlertStore:
         """
         for pid, reading in (new_readings or {}).items():
             self.seen[pid] = reading
+
+    def process_expiry(self, providers, now=None):
+        """Update persistent rows and deliver each grant threshold once.
+
+        The caller holds the app's alert lock across this method and save().
+        Only fresh explicit grant observations can deliver; a capped list's
+        missing rows never imply consumption. Expiry itself needs no network.
+        """
+        stamp = time.time() if now is None else now
+        fresh, groups = {}, {}
+        for pid, provider in (providers or {}).items():
+            block = (provider.get("meta") or {}).get("banked_resets") or {}
+            observed = resetgrants.epoch(block.get("observed_at"))
+            if (block.get("status") != "ok" or observed is None
+                    or not -5 <= stamp - observed <= GRANT_MAX_AGE_SEC):
+                continue
+            by_key = {}
+            fresh[pid] = (block, by_key)
+            for grant in block.get("grants") or []:
+                expires = resetgrants.epoch(grant.get("expires_at"))
+                if not grant.get("id") or expires is None:
+                    continue
+                key = grant_key(pid, grant)
+                by_key[key] = grant
+                if (block.get("count", 0) == 0 or grant.get("status") != "available"
+                        or not grant.get("remaining_count") or expires <= stamp):
+                    continue
+                starts = resetgrants.epoch(grant.get("starts_at"))
+                if starts is not None and starts > stamp:
+                    continue
+                gid = expiry_group_id(pid, grant["coverage"], expires)
+                groups.setdefault(gid, []).append((key, grant, pid))
+
+        # Refresh already-visible reminders, including those loaded at startup.
+        for row in self.pending:
+            if row.get("kind") != "reset_expiry":
+                continue
+            expired = (resetgrants.epoch(row.get("expires_at")) or float("inf")) <= stamp
+            reading = fresh.get(row.get("provider"))
+            for member in row.get("grants") or []:
+                if expired:
+                    member.update(status="expired", remaining_count=0)
+                elif reading:
+                    block, by_key = reading
+                    current = by_key.get(member["key"])
+                    if block.get("count") == 0:
+                        member.update(status="unavailable", remaining_count=0)
+                    elif current is not None:
+                        member.update(status=current["status"],
+                                      remaining_count=current["remaining_count"])
+                    elif block.get("details_complete"):
+                        member.update(status="unavailable", remaining_count=0)
+                    else:
+                        member["status"] = "unverified"
+            self._update_expiry_row(row, expired)
+
+        notices = []
+        pending = {row.get("id"): row for row in self.pending}
+        for gid, members in groups.items():
+            grant = members[0][1]
+            remaining = grant["expires_at"] - stamp
+            threshold = 1 if remaining <= 3600 else 10 if remaining <= 36000 else None
+            if threshold is None:
+                continue
+            due = [key for key, _, _ in members if threshold not in self.delivered.get(key, [])]
+            if not due:
+                continue
+            for key in due:
+                hours = self.delivered.setdefault(key, [])
+                # Late startup skips the ten-hour stage permanently, including
+                # if the clock later moves backwards.
+                for hour in ((10, 1) if threshold == 1 else (10,)):
+                    if hour not in hours:
+                        hours.append(hour)
+            row = pending.get(gid)
+            if row is None:
+                row = {"id": gid, "kind": "reset_expiry", "provider": members[0][2],
+                       "coverage": grant["coverage"], "expires_at": grant["expires_at"],
+                       "detected_at": stamp, "grants": []}
+                self.pending.append(row)
+                pending[gid] = row
+            row.update(threshold_hours=threshold, updated_at=stamp)
+            known = {m["key"]: m for m in row["grants"]}
+            for key, current, _ in members:
+                known[key] = {"key": key, "remaining_count": current["remaining_count"],
+                              "status": "available"}
+            row["grants"] = list(known.values())
+            self._update_expiry_row(row)
+            notices.append(dict(row))
+        return notices
+
+    @staticmethod
+    def _update_expiry_row(row, expired=False):
+        members = row.get("grants") or []
+        row["remaining_count"] = sum(m.get("remaining_count", 0) for m in members
+                                     if m.get("status") == "available")
+        row["status"] = ("expired" if expired else "available" if row["remaining_count"]
+                         else "unverified" if any(m.get("status") == "unverified" for m in members)
+                         else "unavailable")
 
     def add(self, events):
         known = {e.get("id") for e in self.pending}

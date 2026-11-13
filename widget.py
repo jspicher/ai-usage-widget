@@ -16,6 +16,7 @@ import copy
 import json
 import math
 import os
+import re
 import shutil
 import socket
 import socketserver
@@ -28,8 +29,10 @@ import urllib.error
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from functools import lru_cache
 
 import resetwatch
+import resetgrants
 
 try:
     import pystray
@@ -129,9 +132,16 @@ NATIVE_TEXT = {
         "tooltip_resets_in": "resets in",
         "unit_hour": "h",
         "unit_minute": "m",
-        "alert_title": "Quota reset",
+        "alert_title": "Quota alerts",
         "toast_one": "%(provider)s: weekly quota reset",
         "toast_many": "%(count)d weekly quotas reset",
+        "toast_expiry": "%(provider)s · %(reset_type)s: %(count)d remaining · expires %(expiration)s (within %(hours)dh)",
+        "reset_weekly": "Weekly reset",
+        "reset_weekly_fable": "Weekly + Fable reset",
+        "reset_fable": "Fable reset",
+        "reset_session": "Session reset",
+        "reset_full": "Weekly + session reset",
+        "reset_unknown": "Other reset",
     },
     "ru": {
         "tray_show": "Показать",
@@ -140,9 +150,16 @@ NATIVE_TEXT = {
         "tooltip_resets_in": "сброс",
         "unit_hour": "ч",
         "unit_minute": "м",
-        "alert_title": "Сброс квоты",
+        "alert_title": "Оповещения о квотах",
         "toast_one": "%(provider)s: недельная квота сброшена",
         "toast_many": "Сброшено недельных квот: %(count)d",
+        "toast_expiry": "%(provider)s · %(reset_type)s: осталось %(count)d · истекает %(expiration)s (в течение %(hours)d ч)",
+        "reset_weekly": "Сброс недели",
+        "reset_weekly_fable": "Сброс недели + Fable",
+        "reset_fable": "Сброс Fable",
+        "reset_session": "Сброс сессии",
+        "reset_full": "Сброс недели + сессии",
+        "reset_unknown": "Другой сброс",
     },
 }
 
@@ -542,6 +559,23 @@ CLAUDE_USAGE_URLS = [
 ]
 
 
+@lru_cache(maxsize=1)
+def claude_cli_version():
+    """Detect once per launch without opening a console or blocking polling."""
+    executable = shutil.which("claude")
+    if not executable:
+        return None
+    try:
+        proc = subprocess.run(
+            [executable, "--version"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=3,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        match = re.fullmatch(r"\s*(\d+\.\d+\.\d+)(?:\s+\(Claude Code\))?\s*", proc.stdout)
+        return match[1] if proc.returncode == 0 and match else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def read_claude_credentials(paths=None):
     """Try every Claude credential candidate until one has a usable token."""
     read_errors = []
@@ -579,6 +613,7 @@ def read_claude_credentials(paths=None):
 
 def fetch_claude():
     result = provider_result("claude")
+    result["meta"]["banked_resets"] = resetgrants.unavailable()
     credentials, credential_error = read_claude_credentials()
     if not credentials:
         result["error"] = credential_error
@@ -594,7 +629,21 @@ def fetch_claude():
         **{"anthropic-beta": "oauth-2025-04-20",
            "Content-Type": "application/json"})
     data, last_err = None, None
+    version = claude_cli_version()
+    if version:
+        grant_headers = dict(headers, **{"User-Agent": "claude-cli/%s (external, cli)" % version})
+        for url in CLAUDE_USAGE_URLS:
+            data, last_err = request_provider_json(
+                url + "?cedar_ember=1", grant_headers, "Claude", "claude_auth_expired")
+            if isinstance(data, dict):
+                result["meta"]["banked_resets"] = resetgrants.claude(data, time.time())
+                break
+        # Optional grant support must never take ordinary quota reads down.
+        if not isinstance(data, dict) or not isinstance(data.get("seven_day"), dict):
+            data = None
     for url in CLAUDE_USAGE_URLS:
+        if data is not None:
+            break
         data, last_err = request_provider_json(
             url, headers, "Claude", "claude_auth_expired")
         if data is not None:
@@ -787,6 +836,7 @@ def read_codex_session_limits(account_id, now=None):
 
 def fetch_codex():
     result = provider_result("codex")
+    result["meta"]["banked_resets"] = resetgrants.unavailable()
     credentials, credential_error = read_codex_credentials()
     if not credentials:
         result["error"] = credential_error
@@ -804,6 +854,12 @@ def fetch_codex():
     data, request_error = request_provider_json(
         "https://chatgpt.com/backend-api/wham/usage", headers,
         "Codex", "codex_auth_expired")
+    grant_headers = dict(headers, **{"OpenAI-Beta": "codex-1", "originator": "Codex Desktop"})
+    grants, _ = request_provider_json(
+        "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+        grant_headers, "Codex", "codex_auth_expired")
+    result["meta"]["banked_resets"] = resetgrants.codex(
+        grants, time.time(), summary=data.get("rate_limit_reset_credits") if isinstance(data, dict) else None)
     if (request_error and request_error.get("code") == "api_http_error"
             and request_error.get("params", {}).get("status") == 404):
         fallback = read_codex_session_limits(account_id)
@@ -1838,17 +1894,33 @@ class AlertWindowManager:
         icon = TRAY.icon
         if icon is None:
             return
-        if len(events) == 1:
-            provider_id = events[0]["provider"]
+        expiry = [e for e in events if e.get("kind") == "reset_expiry"]
+        weekly = [e for e in events if e.get("kind") != "reset_expiry"]
+        bodies = []
+        for event in expiry:
+            provider_id = event["provider"]
+            coverage = event.get("coverage", "unknown")
+            if "reset_" + coverage not in NATIVE_TEXT["en"]:
+                coverage = "unknown"
+            expiration = datetime.fromtimestamp(event["expires_at"]).astimezone()
+            date_format = "%d.%m.%Y %H:%M %Z" if current_language() == "ru" else "%Y-%m-%d %H:%M %Z"
+            bodies.append(native_text(
+                "toast_expiry", provider=(PROVIDER_INFO.get(provider_id) or {}).get("name", provider_id),
+                reset_type=native_text("reset_" + coverage), count=event["remaining_count"],
+                expiration=expiration.strftime(date_format), hours=event["threshold_hours"]))
+        if len(weekly) == 1:
+            provider_id = weekly[0]["provider"]
             info = PROVIDER_INFO.get(provider_id) or {}
-            body = native_text(
-                "toast_one", provider=info.get("name", provider_id))
-        else:
-            body = native_text("toast_many", count=len(events))
-        try:
-            icon.notify(body, "AI Usage Widget")
-        except Exception:
-            pass
+            bodies.append(native_text("toast_one", provider=info.get("name", provider_id)))
+        elif weekly:
+            bodies.append(native_text("toast_many", count=len(weekly)))
+        # Windows limits each notification body. Keep each expiry group in its
+        # own toast rather than losing a long combined batch to that limit.
+        for body in bodies:
+            try:
+                icon.notify(body, "AI Usage Widget")
+            except Exception:
+                pass
 
 
 ALERT_WINDOW = AlertWindowManager()
@@ -1883,6 +1955,7 @@ def process_reset_alerts(providers):
         events = resetwatch.detect_resets(
             ALERTS.seen, new_readings, cfg, while_away=_FIRST_COMPARE)
         added = ALERTS.add(events)
+        added += ALERTS.process_expiry(providers)
         ALERTS.merge_seen(new_readings)
         ALERTS.save()
         has_pending = bool(ALERTS.pending)

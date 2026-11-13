@@ -219,6 +219,10 @@
   }
   .loading-text{font-size:11px; color:#5c5c64; letter-spacing:.05em}
   
+  .banked-resets{margin:12px 0; padding:10px 0; border-top:1px solid #26262c}
+  .banked-resets > .sub{display:flex; justify-content:space-between; font-size:12px}
+  .reset-grant .sub{font-size:11px; opacity:.7; margin-top:3px}
+  .reset-grant{font-size:12px; margin-top:10px}
   @keyframes spin{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion: reduce){ .bar i{transition:none} }
 </style>
@@ -315,7 +319,18 @@ const L10N = {
     sec: "с",
     of: " из",
     language: "Язык / Language",
-    resetAlert: "Оповещение о сбросе недели",
+    resetAlert: "Оповещения о сбросах и сроках действия",
+    bankedResets: "Доступные сбросы",
+    resetsUnavailable: "Данные о сбросах недоступны",
+    resetDetailsUnavailable: "Даты доступны не для всех сбросов",
+    resetExpiryUnknown: "Срок действия неизвестен",
+    resetExpires: "До {time}",
+    reset_weekly: "Сброс недели",
+    reset_weekly_fable: "Сброс недели + Fable",
+    reset_fable: "Сброс Fable",
+    reset_session: "Сброс сессии",
+    reset_full: "Сброс недели + сессии",
+    reset_unknown: "Другой сброс",
     connectors: "Коннекторы",
     connConnected: "подключено",
     connMissing: "не настроено",
@@ -400,7 +415,18 @@ const L10N = {
     sec: "s",
     of: " of ",
     language: "Language",
-    resetAlert: "Weekly reset alert",
+    resetAlert: "Reset and expiry alerts",
+    bankedResets: "Available resets",
+    resetsUnavailable: "Reset data unavailable",
+    resetDetailsUnavailable: "Some reset details are unavailable",
+    resetExpiryUnknown: "Expiration unavailable",
+    resetExpires: "Expires {time}",
+    reset_weekly: "Weekly reset",
+    reset_weekly_fable: "Weekly + Fable reset",
+    reset_fable: "Fable reset",
+    reset_session: "Session reset",
+    reset_full: "Weekly + session reset",
+    reset_unknown: "Other reset",
     connectors: "Connectors",
     connConnected: "connected",
     connMissing: "not configured",
@@ -507,6 +533,37 @@ const $ = s => document.querySelector(s);
 function esc(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function now(){ return Date.now()/1000 + clockSkew; }
 function usd(v){ return "$" + Number(v).toFixed(2); }
+
+function resetExpiration(epoch){
+  return new Date(epoch * 1000).toLocaleString(LANG === "ru" ? "ru-RU" : "en-US",
+    {year:"numeric", month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"});
+}
+function bankedResets(p, detail=false){
+  const b = p.meta?.banked_resets;
+  if(b?.status !== "ok" || b.count == null){
+    return `<div class="sub">${esc(t("resetsUnavailable"))}</div>`;
+  }
+  let html = `<div class="sub"><span>${esc(t("bankedResets"))}</span><strong>${esc(b.count)}</strong></div>`;
+  if(!detail || !b.count) return html;
+  const groups = new Map();
+  for(const grant of b.grants || []){
+    if(grant.status !== "available" || !grant.remaining_count) continue;
+    if(grant.expires_at != null && grant.expires_at <= now()) continue;
+    const key = JSON.stringify([grant.coverage, grant.expires_at]);
+    const group = groups.get(key) || {...grant, remaining_count:0};
+    group.remaining_count += grant.remaining_count;
+    groups.set(key, group);
+  }
+  for(const grant of [...groups.values()].sort((a,b) => (a.expires_at ?? Infinity) - (b.expires_at ?? Infinity))){
+    html += `<div class="reset-grant"><div>${esc(t("reset_" + grant.coverage))} · ${esc(grant.remaining_count)}</div>
+      <div class="sub">${esc(grant.expires_at == null ? t("resetExpiryUnknown")
+        : t("resetExpires").replace("{time}", resetExpiration(grant.expires_at)))}</div></div>`;
+  }
+  if(!b.details_complete){
+    html += `<div class="sub">${esc(t("resetDetailsUnavailable"))}</div>`;
+  }
+  return html;
+}
 
 function fmtCountdown(epoch){
   if(!epoch) return "";
@@ -638,6 +695,7 @@ function renderOverview(){
     if(p.meta?.usage_source === "codex_session"){
       html += `<div class="sub">${esc(t("codexSessionSource").replace("{time}", fmtClock(p.meta.observed_at)))}</div>`;
     }
+    if(id === "claude" || id === "codex") html += bankedResets(p);
     html += `</button>`;
   }
   el.innerHTML = html;
@@ -706,6 +764,7 @@ function renderDetail(id){
   }
 
   const metaBits = [];
+  html += `<div class="banked-resets">${bankedResets(p, true)}</div>`;
   if(p.meta){
     if(p.meta.usage_source === "codex_session") metaBits.push(t("codexSessionSource").replace("{time}", fmtClock(p.meta.observed_at)));
     if(p.meta.credits != null) metaBits.push(t("credits") + ": " + p.meta.credits);

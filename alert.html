@@ -6,7 +6,7 @@
 <style>
   *{box-sizing:border-box}
   body{margin:0; background:#101012; color:#ececf1; font:12px/1.45 "Segoe UI",system-ui,sans-serif;
-       -webkit-user-select:none; user-select:none; overflow:hidden}
+       -webkit-user-select:none; user-select:none; overflow-y:auto}
   .wrap{padding:12px 14px}
   .head{display:flex; align-items:center; gap:8px; margin-bottom:10px}
   .head .bolt{color:#f5a623; font-size:14px}
@@ -44,7 +44,7 @@
 let LANG = "en";
 const L10N = {
   en: {
-    title:"Quota reset",
+    title:"Quota alerts",
     dismissAll:"Dismiss all",
     noAlerts:"No alerts",
     close:"Close",
@@ -52,9 +52,21 @@ const L10N = {
     detected:"detected {time}",
     whileAway:"while you were away",
     dismiss:"Dismiss",
+    expiryAvailable:"{type} · {count} remaining · within {hours}h",
+    expiryExpired:"{type} · expired · {count} remaining",
+    expiryUnavailable:"{type} · no longer available · {count} remaining",
+    expiryUnverified:"{type} · availability unconfirmed",
+    expires:"Expires {time}",
+    expiredAt:"Expired {time}",
+    reset_weekly:"Weekly reset",
+    reset_weekly_fable:"Weekly + Fable reset",
+    reset_fable:"Fable reset",
+    reset_session:"Session reset",
+    reset_full:"Weekly + session reset",
+    reset_unknown:"Other reset",
   },
   ru: {
-    title:"Сброс квоты",
+    title:"Оповещения о квотах",
     dismissAll:"Закрыть все",
     noAlerts:"Нет оповещений",
     close:"Закрыть",
@@ -62,6 +74,18 @@ const L10N = {
     detected:"обнаружено в {time}",
     whileAway:"пока вас не было",
     dismiss:"Закрыть",
+    expiryAvailable:"{type} · осталось {count} · в течение {hours} ч",
+    expiryExpired:"{type} · срок истёк · осталось {count}",
+    expiryUnavailable:"{type} · больше не доступен · осталось {count}",
+    expiryUnverified:"{type} · доступность не подтверждена",
+    expires:"Действует до {time}",
+    expiredAt:"Срок истёк {time}",
+    reset_weekly:"Сброс недели",
+    reset_weekly_fable:"Сброс недели + Fable",
+    reset_fable:"Сброс Fable",
+    reset_session:"Сброс сессии",
+    reset_full:"Сброс недели + сессии",
+    reset_unknown:"Другой сброс",
   },
 };
 
@@ -78,6 +102,17 @@ function clock(epoch){
   const d = new Date(epoch * 1000);
   return d.toLocaleTimeString(LANG === "ru" ? "ru-RU" : "en-US",
     {hour:"2-digit", minute:"2-digit"});
+}
+
+function expiryText(a){
+  const key = a.status === "expired" ? "expiryExpired"
+    : a.status === "unavailable" ? "expiryUnavailable"
+    : a.status === "unverified" ? "expiryUnverified" : "expiryAvailable";
+  return t(key, {type:t("reset_" + a.coverage), count:a.remaining_count, hours:a.threshold_hours});
+}
+function expiration(epoch){
+  return new Date(epoch * 1000).toLocaleString(LANG === "ru" ? "ru-RU" : "en-US",
+    {year:"numeric", month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"});
 }
 
 async function renderAlerts(){
@@ -108,9 +143,10 @@ async function renderAlerts(){
   rows.innerHTML = alerts.map(a => `
     <div class="row">
       <div class="who">${esc(a.provider_name || a.provider)}</div>
-      <div class="delta">${esc(t("weeklyChange", {
+      <div class="delta">${a.kind === "reset_expiry" ? esc(expiryText(a)) : esc(t("weeklyChange", {
         from:Math.round(a.from_pct), to:Math.round(a.to_pct)
       }))}</div>
+      ${a.kind === "reset_expiry" ? `<div class="when">${esc(t(a.status === "expired" ? "expiredAt" : "expires", {time:expiration(a.expires_at)}))}</div>` : ''}
       <div class="when">${esc(t("detected", {time:clock(a.detected_at)}))}</div>
       ${a.while_away ? `<div class="away">${esc(t("whileAway"))}</div>` : ''}
       <button class="btn" data-id="${esc(a.id)}">${esc(t("dismiss"))}</button>
